@@ -72,6 +72,8 @@ function pickInterestingAttrs(el) {
     ariaHaspopup: getAttr(el, 'aria-haspopup'),
     ariaExpanded: getAttr(el, 'aria-expanded'),
     testid: getAttr(el, 'data-testid'),
+    obActionId: getAttr(el, 'data-ob-action-id'),
+    obLabel: getAttr(el, 'data-ob-label'),
     subpanelId: getAttr(el, 'data-subpanel-id'),
     labelAttr: getAttr(el, 'label')
   };
@@ -157,6 +159,10 @@ function buildBestSelectorForElement(el) {
     const id = getAttr(el, 'id');
     if (id) return `#${CSS.escape(id)}`;
 
+    // Demo/QA override: deterministic selector.
+    const obId = getAttr(el, 'data-ob-action-id');
+    if (obId) return `${tag || '*'}[data-ob-action-id="${safeCssValue(obId)}"]`;
+
     const testid = getAttr(el, 'data-testid');
     if (testid) return `${tag || '*'}[data-testid="${safeCssValue(testid)}"]`;
 
@@ -177,6 +183,10 @@ function buildBestSelectorForElement(el) {
 function computeActionId(el) {
   if (!el) return null;
   try {
+    // Demo/QA override: deterministic actionId (stable across re-renders).
+    const ob = getAttr(el, 'data-ob-action-id');
+    if (ob) return `ob_${ob.slice(0, 80)}`;
+
     const tag = (el.tagName || '').toLowerCase();
     const kind = describeElementKind(el);
     const label = getVisibleActionLabel(el).trim().replace(/\s+/g, ' ').slice(0, 120);
@@ -419,6 +429,10 @@ function collectInteractiveContainers() {
 
 function getVisibleActionLabel(element) {
   if (!element) return '';
+
+  // Demo/QA override: force a stable label even if the element has no visible text (e.g. SVG tiles).
+  const obLabel = (element.getAttribute?.('data-ob-label') || '').trim();
+  if (obLabel) return obLabel;
 
   // Only use what the user can actually see.
   const tag = element.tagName.toLowerCase();
@@ -1831,27 +1845,112 @@ function highlightElement(element) {
   const RED_SOFT = 'rgba(220, 38, 38, 0.20)';
   const DIM = 'rgba(0, 0, 0, 0.35)';
 
+  function clearOverlay() {
+    try {
+      const prevOverlay = __obGlobal.__obState?.highlightOverlay;
+      if (prevOverlay && prevOverlay.parentNode) prevOverlay.parentNode.removeChild(prevOverlay);
+    } catch {
+      // ignore
+    }
+    try {
+      __obGlobal.__obState.highlightOverlay = null;
+    } catch {
+      // ignore
+    }
+  }
+
+  clearOverlay();
+
   const prev = {
     outline: element.style.outline,
     outlineOffset: element.style.outlineOffset,
     transition: element.style.transition,
     backgroundColor: element.style.backgroundColor,
-    boxShadow: element.style.boxShadow
+    boxShadow: element.style.boxShadow,
+    position: element.style.position,
+    zIndex: element.style.zIndex
   };
 
   element.style.transition = 'outline 120ms ease-in-out, box-shadow 120ms ease-in-out, background-color 120ms ease-in-out';
-  // Stronger, more intuitive highlight: red outline + "spotlight" dimming around the element.
-  element.style.outline = `6px solid ${RED}`;
-  element.style.outlineOffset = '8px';
-  element.style.backgroundColor = RED_SOFT;
-  element.style.boxShadow = `0 0 0 10px ${RED_SOFT}, 0 0 0 9999px ${DIM}`;
+
+  // Fallback highlight directly on the element (in case overlay cannot render).
+  try {
+    if (!element.style.position) element.style.position = 'relative';
+    element.style.setProperty('z-index', '2147483646', 'important');
+    element.style.setProperty('outline', `6px solid ${RED}`, 'important');
+    element.style.setProperty('outline-offset', '8px', 'important');
+    element.style.setProperty('background-color', RED_SOFT, 'important');
+  } catch {
+    element.style.outline = `6px solid ${RED}`;
+    element.style.outlineOffset = '8px';
+    element.style.backgroundColor = RED_SOFT;
+  }
+
+  // Primary highlight: top-level fixed overlay (beats stacking contexts).
+  setTimeout(() => {
+    try {
+      const rect = element.getBoundingClientRect();
+      const vw = Math.max(1, window.innerWidth || 1);
+      const vh = Math.max(1, window.innerHeight || 1);
+
+      const left = Math.max(0, Math.min(vw, rect.left));
+      const top = Math.max(0, Math.min(vh, rect.top));
+      const right = Math.max(0, Math.min(vw, rect.right));
+      const bottom = Math.max(0, Math.min(vh, rect.bottom));
+
+      const overlay = document.createElement('div');
+      overlay.setAttribute('data-ob-highlight', '1');
+      overlay.style.position = 'fixed';
+      overlay.style.inset = '0';
+      overlay.style.pointerEvents = 'none';
+      overlay.style.zIndex = '2147483647';
+
+      const mkDim = (x, y, w, h) => {
+        const d = document.createElement('div');
+        d.style.position = 'fixed';
+        d.style.left = `${Math.max(0, x)}px`;
+        d.style.top = `${Math.max(0, y)}px`;
+        d.style.width = `${Math.max(0, w)}px`;
+        d.style.height = `${Math.max(0, h)}px`;
+        d.style.background = DIM;
+        d.style.pointerEvents = 'none';
+        return d;
+      };
+
+      // 4 rectangles around the target.
+      overlay.appendChild(mkDim(0, 0, vw, top));
+      overlay.appendChild(mkDim(0, bottom, vw, vh - bottom));
+      overlay.appendChild(mkDim(0, top, left, bottom - top));
+      overlay.appendChild(mkDim(right, top, vw - right, bottom - top));
+
+      const ring = document.createElement('div');
+      ring.style.position = 'fixed';
+      ring.style.left = `${left}px`;
+      ring.style.top = `${top}px`;
+      ring.style.width = `${Math.max(0, right - left)}px`;
+      ring.style.height = `${Math.max(0, bottom - top)}px`;
+      ring.style.border = `6px solid ${RED}`;
+      ring.style.borderRadius = '8px';
+      ring.style.boxShadow = `0 0 0 10px ${RED_SOFT}`;
+      ring.style.pointerEvents = 'none';
+      overlay.appendChild(ring);
+
+      (document.documentElement || document.body).appendChild(overlay);
+      __obGlobal.__obState.highlightOverlay = overlay;
+    } catch {
+      // ignore
+    }
+  }, 80);
 
   setTimeout(() => {
+    clearOverlay();
     element.style.outline = prev.outline;
     element.style.outlineOffset = prev.outlineOffset;
     element.style.transition = prev.transition;
     element.style.backgroundColor = prev.backgroundColor;
     element.style.boxShadow = prev.boxShadow;
+    element.style.position = prev.position;
+    element.style.zIndex = prev.zIndex;
   }, 2400);
 }
 
