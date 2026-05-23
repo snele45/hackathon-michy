@@ -48,6 +48,7 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .label {
@@ -65,6 +66,12 @@ body {
   background: #ffffff;
   color: var(--ui-fg);
   outline: none;
+}
+
+.inputRow .input {
+  flex: 1;
+  width: auto;
+  min-width: 180px;
 }
 
 .input:focus {
@@ -94,6 +101,16 @@ body {
 
 .btn:hover {
   border-color: rgba(37, 99, 235, 0.35);
+}
+
+.btn.danger {
+  color: var(--ui-danger);
+  border-color: rgba(185, 28, 28, 0.32);
+  background: #ffffff;
+}
+
+.btn.danger:hover {
+  border-color: rgba(185, 28, 28, 0.55);
 }
 
 .btn:disabled {

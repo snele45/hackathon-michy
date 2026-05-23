@@ -51,7 +51,47 @@ app.post('/api/explain', async (req, res) => {
       selectedText: context?.selectedText || null,
       headings: Array.isArray(context?.headings) ? context.headings.slice(0, 10) : [],
       primaryActions: Array.isArray(context?.primaryActions) ? context.primaryActions.slice(0, 20) : [],
+      navItems: Array.isArray(context?.navItems) ? context.navItems.slice(0, 25) : [],
+      navigationGroups: Array.isArray(context?.navigationGroups)
+        ? context.navigationGroups.slice(0, 4).map((g) => ({
+            kind: g?.kind || null,
+            key: g?.key || null,
+            area: g?.area || null,
+            items: Array.isArray(g?.items) ? g.items.slice(0, 24) : []
+          }))
+        : [],
       fieldLabels: Array.isArray(context?.fieldLabels) ? context.fieldLabels.slice(0, 20) : [],
+      primaryFields: Array.isArray(context?.primaryFields) ? context.primaryFields.slice(0, 20) : [],
+      fieldCandidates: Array.isArray(context?.fieldCandidates)
+        ? context.fieldCandidates.slice(0, 25).map((f) => ({
+            label: typeof f?.label === 'string' ? f.label.slice(0, 80) : null,
+            labelSource: f?.labelSource || null,
+            placeholder: typeof f?.placeholder === 'string' ? f.placeholder.slice(0, 80) : null,
+            name: typeof f?.name === 'string' ? f.name.slice(0, 80) : null,
+            kind: f?.kind || null,
+            disabled: f?.disabled || null,
+            required: f?.required || null,
+            hasValue: f?.hasValue || null,
+            valueLength: Number.isFinite(f?.valueLength) ? f.valueLength : null,
+            optionsCount: Number.isFinite(f?.optionsCount) ? f.optionsCount : null
+          }))
+        : [],
+      dropdownTriggers: Array.isArray(context?.dropdownTriggers)
+        ? context.dropdownTriggers.slice(0, 20).map((d) => ({
+            label: typeof d?.label === 'string' ? d.label.slice(0, 80) : null,
+            kind: d?.kind || null,
+            role: d?.role || null,
+            haspopup: d?.haspopup || null,
+            expanded: typeof d?.expanded === 'boolean' ? d.expanded : null,
+            area: d?.area || null
+          }))
+        : [],
+      openMenuGroups: Array.isArray(context?.openMenuGroups)
+        ? context.openMenuGroups.slice(0, 6).map((g) => ({
+            kind: g?.kind || null,
+            items: Array.isArray(g?.items) ? g.items.slice(0, 12) : []
+          }))
+        : [],
       recentEvents: Array.isArray(context?.recentEvents)
         ? context.recentEvents
             .slice(-10)
@@ -77,6 +117,9 @@ app.post('/api/explain', async (req, res) => {
       '- Keep steps actionable and short.',
       '- Prefer referencing common UI affordances: menus, tabs, buttons, search boxes, forms.',
       '- Use the Goal text to choose the most relevant actions from Context.primaryActions (e.g., if goal mentions Instagram/social media/templates, prefer matching visible labels like "Templates" or "Social media See all" if present).',
+      '- If Context.openMenuGroups includes visible items (dropdown/menu options), prefer selecting an actionLabel from those items when guiding through submenus.',
+      '- Prefer selecting navigation/sidebar items from Context.navItems / Context.navigationGroups for section changes (this is usually the start of a walkthrough).',
+      '- If the goal is about email/inbox/unread and Context.navItems includes "Mailbox", choose "Mailbox" as the next click.',
       '- If Context.recentEvents show recent clicks, use that to infer progress and suggest what to do next.',
       '- Output MUST be valid JSON only (no markdown, no prose outside JSON).',
       '',
@@ -94,8 +137,10 @@ app.post('/api/explain', async (req, res) => {
       '',
       'Guidance for steps:',
       '- If a step requires clicking a button/link, set actionLabel to the exact visible label.',
-      '- Prefer an EXACT match from Context.primaryActions (case-insensitive match is ok) so the UI can locate/highlight it.',
-      '- Never use aria-label/title/alt; use only visible text.',
+      '- If a step requires filling a field, set actionLabel to the field label OR placeholder text (what the user sees).',
+      '- Prefer an EXACT match from Context.primaryActions or Context.primaryFields (case-insensitive match is ok) so the UI can locate/highlight it.',
+      '- Prefer visible text. If an element is icon-only with no visible label, using its aria-label or title is acceptable as a fallback.',
+      '- If you cannot confidently provide an exact actionLabel from context, omit actionLabel and instead describe WHERE it is (left sidebar/top bar/right panel/main area) using Context.navigationGroups[*].area and the surrounding labels.',
       '',
       'Context JSON:',
       JSON.stringify(safeContext),

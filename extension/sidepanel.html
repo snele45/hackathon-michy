@@ -15,12 +15,14 @@
 
     <section class="card">
       <div class="row">
-        <button id="capture" class="btn primary">Capture page context</button>
-        <button id="explain" class="btn">Explain next step</button>
+        <button id="newSession" class="btn danger">Clear context</button>
       </div>
 
       <label class="label" for="goal">Goal</label>
-      <input id="goal" class="input" type="text" placeholder="e.g. Create a new customer record" />
+      <div class="row inputRow">
+        <input id="goal" class="input" type="text" placeholder="e.g. Create a new customer record" />
+        <button id="explain" class="btn">Explain</button>
+      </div>
 
       <div class="small" id="pageMeta"></div>
       <pre class="context" id="contextPreview"></pre>
@@ -34,7 +36,7 @@
       <div class="stepsHeader">
         <div class="label">Steps</div>
         <div class="row">
-          <button id="done" class="btn">Mark step done</button>
+          <button id="done" class="btn">Complete step</button>
         </div>
       </div>
       <ol class="steps" id="steps"></ol>
