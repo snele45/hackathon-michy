@@ -12,10 +12,9 @@ function setThemeFromHint(themeHint) {
   if (!themeHint) return;
   const root = document.documentElement;
 
+  // Keep a unified, predictable UI in the side panel.
+  // We only adopt the page font (optional) but do not override colors.
   if (themeHint.fontFamily) root.style.setProperty('--ui-font', themeHint.fontFamily);
-  if (themeHint.backgroundColor) root.style.setProperty('--ui-bg', themeHint.backgroundColor);
-  if (themeHint.textColor) root.style.setProperty('--ui-fg', themeHint.textColor);
-  if (themeHint.accentColor) root.style.setProperty('--ui-accent', themeHint.accentColor);
 }
 
 function render() {

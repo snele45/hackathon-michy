@@ -1,10 +1,13 @@
 :root {
-  --ui-bg: #0b0d10;
-  --ui-fg: #e8eef6;
-  --ui-muted: rgba(232, 238, 246, 0.7);
-  --ui-card: rgba(255, 255, 255, 0.06);
-  --ui-border: rgba(255, 255, 255, 0.12);
-  --ui-accent: #4ea1ff;
+  --ui-bg: #f7f9fc;
+  --ui-fg: #0b1b33;
+  --ui-muted: rgba(11, 27, 51, 0.68);
+  --ui-card: #ffffff;
+  --ui-border: rgba(11, 27, 51, 0.14);
+  --ui-accent: #2563eb;
+  --ui-accent-2: #1d4ed8;
+  --ui-accent-bg: rgba(37, 99, 235, 0.1);
+  --ui-danger: #b91c1c;
   --ui-font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 }
 
@@ -55,28 +58,38 @@ body {
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--ui-border);
-  background: rgba(0, 0, 0, 0.2);
+  background: #ffffff;
   color: var(--ui-fg);
   outline: none;
 }
 
 .input:focus {
-  border-color: rgba(78, 161, 255, 0.7);
+  border-color: rgba(37, 99, 235, 0.65);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
 .btn {
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--ui-border);
-  background: rgba(0, 0, 0, 0.2);
+  background: #ffffff;
   color: var(--ui-fg);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .btn.primary {
-  border-color: rgba(78, 161, 255, 0.6);
-  background: rgba(78, 161, 255, 0.16);
+  border-color: rgba(37, 99, 235, 0.45);
+  background: var(--ui-accent);
+  color: #ffffff;
+}
+
+.btn.primary:hover {
+  background: var(--ui-accent-2);
+}
+
+.btn:hover {
+  border-color: rgba(37, 99, 235, 0.35);
 }
 
 .btn:disabled {
@@ -97,7 +110,7 @@ body {
   padding: 8px;
   border-radius: 8px;
   border: 1px solid var(--ui-border);
-  background: rgba(0, 0, 0, 0.25);
+  background: rgba(37, 99, 235, 0.04);
   font-size: 11px;
   color: var(--ui-muted);
 }
@@ -125,9 +138,10 @@ body {
   padding: 6px 8px;
   border: 1px solid var(--ui-border);
   border-radius: 8px;
-  background: rgba(0,0,0,0.15);
+  background: rgba(37, 99, 235, 0.04);
 }
 
 .steps li.active {
-  border-color: rgba(78, 161, 255, 0.7);
+  border-color: rgba(37, 99, 235, 0.7);
+  background: rgba(37, 99, 235, 0.09);
 }
