@@ -26,6 +26,9 @@ function render() {
         {
           selectedText: ctx.selectedText || null,
           headings: ctx.headings,
+          currentNav: ctx.currentNav,
+          breadcrumbs: ctx.breadcrumbs,
+          searchHints: ctx.searchHints,
           primaryActions: ctx.primaryActions,
           fieldLabels: ctx.fieldLabels
         },
@@ -98,6 +101,16 @@ function setStatus(text) {
   el('statusLine').textContent = text || '';
 }
 
+function setConfidence(value01, note) {
+  const n = typeof value01 === 'number' && Number.isFinite(value01) ? Math.max(0, Math.min(1, value01)) : null;
+  if (n === null) {
+    el('confidenceLine').textContent = '';
+    return;
+  }
+  const pct = Math.round(n * 100);
+  el('confidenceLine').textContent = `Confidence: ${pct}%${note ? ` (${note})` : ''}`;
+}
+
 function findActionCandidate(label) {
   const ctx = state.context;
   if (!ctx?.actionCandidates || !Array.isArray(ctx.actionCandidates)) return null;
@@ -152,6 +165,7 @@ function applyPreviewStyle(buttonEl, candidate) {
 
 async function captureContext() {
   setStatus('');
+  setConfidence(null);
   const result = await chrome.runtime.sendMessage({ type: 'CAPTURE_CONTEXT' });
   if (!result?.ok) {
     setStatus(result?.error || 'Failed to capture context.');
@@ -178,6 +192,7 @@ async function explainNextStep() {
   el('summary').textContent = 'Thinking…';
   el('clarifying').textContent = '';
   el('currentHelp').textContent = '';
+  setConfidence(null);
 
   const payload = {
     goal,
@@ -218,6 +233,17 @@ async function explainNextStep() {
 
   if (typeof data.currentStepHelp === 'string') {
     el('currentHelp').textContent = data.currentStepHelp;
+  }
+
+  if (Number.isFinite(data.confidence)) {
+    setConfidence(data.confidence);
+  } else {
+    // Fallback heuristic: more steps with actionLabel => higher confidence.
+    const labeled = Array.isArray(state.steps)
+      ? state.steps.filter((s) => typeof s?.actionLabel === 'string' && s.actionLabel.trim()).length
+      : 0;
+    const denom = Math.max(1, state.steps.length || 1);
+    setConfidence(labeled / denom, 'heuristic');
   }
 
   state.history.push({

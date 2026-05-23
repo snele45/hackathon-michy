@@ -50,8 +50,16 @@ app.post('/api/explain', async (req, res) => {
       title: context?.title || null,
       selectedText: context?.selectedText || null,
       headings: Array.isArray(context?.headings) ? context.headings.slice(0, 10) : [],
+      currentNav: Array.isArray(context?.currentNav) ? context.currentNav.slice(0, 10) : [],
+      breadcrumbs: Array.isArray(context?.breadcrumbs) ? context.breadcrumbs.slice(0, 3) : [],
+      searchHints: Array.isArray(context?.searchHints) ? context.searchHints.slice(0, 10) : [],
       primaryActions: Array.isArray(context?.primaryActions) ? context.primaryActions.slice(0, 20) : [],
       fieldLabels: Array.isArray(context?.fieldLabels) ? context.fieldLabels.slice(0, 20) : [],
+      actionRisks: Array.isArray(context?.actionCandidates)
+        ? context.actionCandidates
+            .slice(0, 25)
+            .map((a) => ({ label: a?.label || '', risk: a?.analysis?.risk || 'unknown' }))
+        : [],
       themeHint: context?.themeHint || null
     };
 
@@ -74,7 +82,8 @@ app.post('/api/explain', async (req, res) => {
       '  "clarifyingQuestion": string | null,',
       '  "steps": Array<{"title": string, "details": string, "actionLabel"?: string}>,',
       '  "currentStepIndex": number,',
-      '  "currentStepHelp": string',
+      '  "currentStepHelp": string,',
+      '  "confidence": number',
       '}',
       '',
       `Mode: ${mode || 'auto'}`,
@@ -84,6 +93,8 @@ app.post('/api/explain', async (req, res) => {
       '- If a step requires clicking a button/link, set actionLabel to the exact visible label.',
       '- Prefer an EXACT match from Context.primaryActions (case-insensitive match is ok) so the UI can locate/highlight it.',
       '- Never use aria-label/title/alt; use only visible text.',
+      '- Consider Context.actionRisks: avoid proposing high-risk clicks unless necessary; if high-risk, add a warning in details.',
+      '- Set confidence between 0 and 1 based on how well the context supports the steps and whether actionLabel matches are strong.',
       '',
       'Context JSON:',
       JSON.stringify(safeContext),

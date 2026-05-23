@@ -65,6 +65,59 @@ function describeElementKind(element) {
   return tag;
 }
 
+function findAncestorForm(element) {
+  let n = element;
+  while (n) {
+    if (n.tagName && n.tagName.toLowerCase() === 'form') return n;
+    n = n.parentElement;
+  }
+  return null;
+}
+
+function analyzeActionElement(element) {
+  const tag = element.tagName.toLowerCase();
+  const kind = describeElementKind(element);
+
+  const hasOnClick = typeof element.onclick === 'function' || element.hasAttribute('onclick');
+  const form = findAncestorForm(element);
+
+  let href = null;
+  let target = null;
+  if (tag === 'a') {
+    href = element.getAttribute('href') || null;
+    target = element.getAttribute('target') || null;
+  }
+
+  const inputType = tag === 'input' ? (element.getAttribute('type') || '').toLowerCase() : null;
+  const buttonType = tag === 'button' ? (element.getAttribute('type') || 'submit').toLowerCase() : null;
+  const isSubmitLike =
+    (tag === 'button' && (buttonType === 'submit' || buttonType === 'image')) ||
+    (tag === 'input' && (inputType === 'submit' || inputType === 'image'));
+
+  const formAction = form ? form.getAttribute('action') || null : null;
+  const isLikelyNavigation = Boolean(href) || (kind === 'link' && !isSubmitLike);
+  const isPotentiallyDestructive = /\b(delete|remove|archive|deactivate|disable|cancel|discard)\b/i.test(
+    getVisibleActionLabel(element)
+  );
+
+  let risk = 'low';
+  if (isPotentiallyDestructive) risk = 'high';
+  else if (isSubmitLike || (form && hasOnClick)) risk = 'high';
+  else if (hasOnClick) risk = 'medium';
+  else if (isLikelyNavigation) risk = 'medium';
+
+  return {
+    kind,
+    href,
+    target,
+    hasOnClick,
+    inForm: Boolean(form),
+    isSubmitLike,
+    formAction,
+    risk
+  };
+}
+
 function collectActionCandidates() {
   const out = [];
   const candidates = [
@@ -81,7 +134,8 @@ function collectActionCandidates() {
     out.push({
       label: compact,
       kind: describeElementKind(el),
-      style: getActionStyleSnapshot(el)
+      style: getActionStyleSnapshot(el),
+      analysis: analyzeActionElement(el)
     });
   }
 
@@ -119,6 +173,49 @@ function collectFieldLabels() {
     labels.push(compact);
   }
   return [...new Set(labels)].slice(0, 20);
+}
+
+function collectCurrentNav() {
+  const items = [];
+  const current = [...document.querySelectorAll('[aria-current]')].slice(0, 20);
+  for (const el of current) {
+    if (!isElementVisible(el)) continue;
+    const t = (el.innerText || '').trim();
+    if (!t) continue;
+    items.push(t.replace(/\s+/g, ' '));
+  }
+  return [...new Set(items)].slice(0, 10);
+}
+
+function collectBreadcrumbs() {
+  const out = [];
+  const navs = [...document.querySelectorAll('nav[aria-label*="breadcrumb" i], nav[aria-label*="breadcrumbs" i]')];
+  for (const nav of navs.slice(0, 3)) {
+    if (!isElementVisible(nav)) continue;
+    const links = [...nav.querySelectorAll('a, span, li')].slice(0, 20);
+    const parts = [];
+    for (const l of links) {
+      if (!isElementVisible(l)) continue;
+      const t = (l.innerText || '').trim();
+      if (!t) continue;
+      parts.push(t.replace(/\s+/g, ' '));
+    }
+    if (parts.length) out.push(parts.slice(0, 8));
+  }
+  return out.slice(0, 3);
+}
+
+function collectSearchHints() {
+  const hints = [];
+  const inputs = [
+    ...document.querySelectorAll('input[type="search"], input[placeholder], [role="searchbox"]')
+  ].slice(0, 40);
+  for (const i of inputs) {
+    if (!isElementVisible(i)) continue;
+    const placeholder = (i.getAttribute('placeholder') || '').trim();
+    if (placeholder) hints.push(placeholder.replace(/\s+/g, ' '));
+  }
+  return [...new Set(hints)].slice(0, 10);
 }
 
 function findBestActionElementByLabel(label) {
@@ -216,6 +313,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       title: document.title,
       selectedText: getSelectedText(),
       headings: collectHeadings(),
+      currentNav: collectCurrentNav(),
+      breadcrumbs: collectBreadcrumbs(),
+      searchHints: collectSearchHints(),
       actionCandidates,
       primaryActions: actionCandidates.map((a) => a.label),
       fieldLabels: collectFieldLabels(),
