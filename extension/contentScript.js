@@ -1255,8 +1255,11 @@ var __obGlobal = globalThis;
 __obGlobal.__obState = __obGlobal.__obState || {
   clickSeq: 0,
   clickListenerInstalled: false,
+  changeListenerInstalled: false,
   messageListenerInstalled: false,
-  actionIndex: new Map()
+  actionIndex: new Map(),
+  lastNonClickSig: null,
+  lastNonClickAt: 0
 };
 
 function emitPageEvent(event) {
@@ -1284,6 +1287,7 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
       const at = Date.now();
 
       emitPageEvent({
+        eventType: 'click',
         kind,
         label,
         actionId,
@@ -1298,6 +1302,7 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
           const urlAfter = location.href;
           if (urlAfter !== urlBefore) {
             emitPageEvent({
+              eventType: 'click',
               kind,
               label,
               actionId,
@@ -1315,6 +1320,82 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
     true
   );
   __obGlobal.__obState.clickListenerInstalled = true;
+}
+
+function summarizeSelectionChange(el) {
+  if (!el) return null;
+  try {
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'select') {
+      const selected = [...el.selectedOptions].map((o) => (o?.innerText || o?.value || '').toString().trim()).filter(Boolean);
+      const value = (el.value || '').toString().trim();
+      return {
+        control: 'select',
+        value: value ? value.slice(0, 120) : null,
+        selectedText: selected.length ? selected.join(' | ').slice(0, 220) : null
+      };
+    }
+
+    if (tag === 'input') {
+      const type = (el.getAttribute('type') || '').toLowerCase();
+      if (type === 'checkbox' || type === 'radio') {
+        return {
+          control: type,
+          checked: Boolean(el.checked)
+        };
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+// Track selection-state changes (select / checkbox / radio) to refresh guidance like clicks.
+if (!__obGlobal.__obState.changeListenerInstalled) {
+  document.addEventListener(
+    'change',
+    (e) => {
+      const targetEl = e?.target;
+      if (!targetEl || !(targetEl instanceof Element)) return;
+
+      const tag = (targetEl.tagName || '').toLowerCase();
+      const type = tag === 'input' ? (targetEl.getAttribute('type') || '').toLowerCase() : '';
+      const isSelectionControl = tag === 'select' || (tag === 'input' && (type === 'checkbox' || type === 'radio'));
+      if (!isSelectionControl) return;
+      if (!isElementVisible(targetEl)) return;
+
+      const change = summarizeSelectionChange(targetEl);
+      const assoc = (getAssociatedLabelText(targetEl) || '').trim().replace(/\s+/g, ' ');
+      const visible = getVisibleActionLabel(targetEl).trim().replace(/\s+/g, ' ');
+      const label = assoc || visible || null;
+      const actionId = computeActionId(targetEl);
+      const kind = describeElementKind(targetEl);
+      const urlBefore = location.href;
+      const seq = ++__obGlobal.__obState.clickSeq;
+      const at = Date.now();
+
+      const sig = `change|${actionId || ''}|${label || ''}|${JSON.stringify(change || {})}`;
+      const lastAt = __obGlobal.__obState.lastNonClickAt || 0;
+      if (__obGlobal.__obState.lastNonClickSig === sig && at - lastAt < 350) return;
+      __obGlobal.__obState.lastNonClickSig = sig;
+      __obGlobal.__obState.lastNonClickAt = at;
+
+      emitPageEvent({
+        eventType: 'change',
+        kind,
+        label,
+        actionId,
+        change,
+        urlBefore,
+        urlAfter: null,
+        at,
+        seq
+      });
+    },
+    true
+  );
+  __obGlobal.__obState.changeListenerInstalled = true;
 }
 
 function findBestActionElementByLabel(label, options = {}) {

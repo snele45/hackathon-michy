@@ -220,6 +220,30 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return;
       }
 
+      if (msg?.type === 'CLEAR_TAB_STATE') {
+        const tab = await getActiveTab();
+        if (!tab?.id) {
+          sendResponse({ ok: false, error: 'No active tab found.' });
+          return;
+        }
+
+        try {
+          recentEventsByTab.delete(tab.id);
+          navGraphByTab.delete(tab.id);
+        } catch {
+          // ignore
+        }
+
+        try {
+          await storageRemove([`recentEvents:${tab.id}`, `navGraph:${tab.id}`]);
+        } catch {
+          // ignore
+        }
+
+        sendResponse({ ok: true });
+        return;
+      }
+
       sendResponse({ ok: false, error: 'Unknown message.' });
     } catch (e) {
       sendResponse({ ok: false, error: e?.message || 'Error' });

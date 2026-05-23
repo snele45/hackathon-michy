@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
+import { randomUUID } from 'crypto';
 import { MemoryStore, buildMemoryDocuments, defaultMemoryFilePath } from './memoryStore.js';
 
 dotenv.config();
@@ -23,6 +24,27 @@ const client = OPENAI_API_KEY
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function mkReqId() {
+  try {
+    return randomUUID().slice(0, 8);
+  } catch {
+    return Math.random().toString(16).slice(2, 10);
+  }
+}
+
+function logEvent(event, data) {
+  try {
+    const payload = data && typeof data === 'object' ? data : { value: data };
+    console.log(JSON.stringify({ at: nowIso(), event, ...payload }));
+  } catch {
+    console.log(`[${nowIso()}] ${event}`);
+  }
+}
 
 const memoryStorePromise = MemoryStore.load({
   filePath: defaultMemoryFilePath(),
@@ -50,6 +72,9 @@ function computeSessionKey({ session, url }) {
 
 app.post('/api/explain', async (req, res) => {
   try {
+    const reqId = mkReqId();
+    const t0 = Date.now();
+
     if (!client) {
       return res.status(500).json({
         error: 'Missing OPENAI_API_KEY. Create server/.env (see .env.example).'
@@ -71,6 +96,35 @@ app.post('/api/explain', async (req, res) => {
     if (!goal || typeof goal !== 'string') {
       return res.status(400).json({ error: 'Missing `goal` (string).' });
     }
+
+    const urlHint = typeof context?.url === 'string' ? context.url.slice(0, 360) : null;
+    const sessionKey = computeSessionKey({ session, url: urlHint });
+    const hasScreenshot = typeof screenshot === 'string' && screenshot.startsWith('data:image/');
+    const lastEventRaw = Array.isArray(context?.recentEvents) ? context.recentEvents[context.recentEvents.length - 1] : null;
+    const lastEvent = lastEventRaw
+      ? {
+          eventType: lastEventRaw?.eventType || null,
+          kind: lastEventRaw?.kind || null,
+          label: typeof lastEventRaw?.label === 'string' ? lastEventRaw.label.slice(0, 100) : null,
+          actionId: typeof lastEventRaw?.actionId === 'string' ? lastEventRaw.actionId.slice(0, 60) : null,
+          change: lastEventRaw?.change || null,
+          urlAfter: typeof lastEventRaw?.urlAfter === 'string' ? lastEventRaw.urlAfter.slice(0, 180) : null
+        }
+      : null;
+
+    logEvent('explain_request', {
+      reqId,
+      sessionKey,
+      mode: typeof mode === 'string' ? mode : null,
+      reason: typeof reason === 'string' ? reason : null,
+      url: urlHint,
+      goalLen: goal.length,
+      stepsIn: Array.isArray(steps) ? steps.length : 0,
+      currentStepIndex: Number.isFinite(currentStepIndex) ? currentStepIndex : null,
+      hasScreenshot,
+      screenshotStale: Boolean(context?.screenshotStale),
+      lastEvent
+    });
 
     function tokenizeGoal(g) {
       const raw = (g || '').toLowerCase();
@@ -348,8 +402,6 @@ app.post('/api/explain', async (req, res) => {
       session: session && typeof session === 'object' ? session : null
     };
 
-    const sessionKey = computeSessionKey({ session, url: workflowState.url });
-
     const safeHistory = Array.isArray(history) ? history.slice(-10) : [];
     const safePlanSteps = Array.isArray(steps)
       ? steps.slice(0, 18).map((s) => ({
@@ -409,6 +461,13 @@ app.post('/api/explain', async (req, res) => {
         hostHint: null,
         sessionKey,
         topK: 6
+      });
+
+      logEvent('memory_retrieved', {
+        reqId,
+        sessionKey,
+        retrieved: Array.isArray(retrievedMemory) ? retrievedMemory.length : 0,
+        hasGraphNeighborhood: Boolean(graphNeighborhood)
       });
 
       await memoryStore.save();
@@ -494,8 +553,6 @@ app.post('/api/explain', async (req, res) => {
       JSON.stringify(safeHistory)
     ].join('\n');
 
-    const hasScreenshot = typeof screenshot === 'string' && screenshot.startsWith('data:image/');
-
     async function callModel({ withImage, extraInstruction }) {
       const finalPrompt = extraInstruction ? `${prompt}\n\n${extraInstruction}` : prompt;
       const input = withImage
@@ -510,12 +567,23 @@ app.post('/api/explain', async (req, res) => {
           ]
         : finalPrompt;
 
-      return await client.responses.create({
+      const tCall0 = Date.now();
+      const resp = await client.responses.create({
         model: OPENAI_MODEL,
         input,
         temperature: 0.2,
         max_output_tokens: 520
       });
+
+      logEvent('openai_call', {
+        reqId,
+        sessionKey,
+        withImage: Boolean(withImage),
+        extraInstruction: Boolean(extraInstruction),
+        ms: Date.now() - tCall0
+      });
+
+      return resp;
     }
 
     let response;
@@ -524,6 +592,7 @@ app.post('/api/explain', async (req, res) => {
     } catch (e) {
       // Fallback: if model or account doesn't support images, retry text-only.
       if (hasScreenshot) {
+        logEvent('openai_image_fallback', { reqId, sessionKey, error: e?.message || 'image call failed' });
         response = await callModel({ withImage: false, extraInstruction: '' });
       } else {
         throw e;
@@ -536,6 +605,7 @@ app.post('/api/explain', async (req, res) => {
     try {
       data = JSON.parse(text);
     } catch {
+      logEvent('model_non_json', { reqId, sessionKey, textPreview: text.slice(0, 180) });
       return res.json({
         summary: 'Model returned non-JSON output. Showing raw text.',
         clarifyingQuestion: null,
@@ -557,6 +627,12 @@ app.post('/api/explain', async (req, res) => {
 
       const repeats = (prevId && nextId && prevId === nextId) || (prevLabel && nextLabel && prevLabel === nextLabel);
       if (repeats) {
+        logEvent('model_repeat_retry', {
+          reqId,
+          sessionKey,
+          prevActionId: previousStep.actionId || null,
+          prevActionLabel: previousStep.actionLabel || null
+        });
         const extra = [
           'STRICT RULE: The user completed the previous step.',
           `Do NOT return the same actionId/actionLabel again (previous actionId=${previousStep.actionId || ''}, actionLabel=${previousStep.actionLabel || ''}).`,
@@ -600,6 +676,7 @@ app.post('/api/explain', async (req, res) => {
         const details = typeof step0.details === 'string' ? step0.details.trim() : '';
         if (details && details.length > 400) {
           try {
+            logEvent('details_over_limit_retry', { reqId, sessionKey, detailsLen: details.length });
             const extra = [
               'STRICT FORMAT FIX:',
               '- Your previous JSON violated the details length limit.',
@@ -654,8 +731,19 @@ app.post('/api/explain', async (req, res) => {
       // best-effort
     }
 
+    const returned0 = Array.isArray(data?.steps) && data.steps.length ? data.steps[0] : null;
+    logEvent('explain_response', {
+      reqId,
+      sessionKey,
+      msTotal: Date.now() - t0,
+      actionId: typeof returned0?.actionId === 'string' ? returned0.actionId : null,
+      actionLabel: typeof returned0?.actionLabel === 'string' ? returned0.actionLabel : null,
+      detailsLen: typeof returned0?.details === 'string' ? returned0.details.length : null
+    });
+
     return res.json(data);
   } catch (err) {
+    logEvent('explain_error', { error: err?.message || 'Server error' });
     console.error(err);
     return res.status(500).json({ error: 'Server error' });
   }
@@ -668,8 +756,10 @@ app.post('/api/session/end', async (req, res) => {
     const memoryStore = await memoryStorePromise;
     const result = memoryStore.clearVectorForSession(sessionKey);
     await memoryStore.save();
+    logEvent('session_end', { sessionKey, removed: result?.removed ?? 0 });
     return res.json({ ok: true, ...result });
   } catch (e) {
+    logEvent('session_end_error', { error: e?.message || 'session end failed' });
     return res.status(500).json({ ok: false, error: e?.message || 'session end failed' });
   }
 });
@@ -682,8 +772,10 @@ app.post('/api/reset', async (req, res) => {
     const memoryStore = await memoryStorePromise;
     const result = memoryStore.clearVectorForSession(sessionKey);
     await memoryStore.save();
+    logEvent('reset_alias_session_end', { sessionKey, removed: result?.removed ?? 0 });
     return res.json({ ok: true, ...result });
   } catch (e) {
+    logEvent('reset_alias_error', { error: e?.message || 'reset failed' });
     return res.status(500).json({ ok: false, error: e?.message || 'reset failed' });
   }
 });

@@ -18,6 +18,8 @@ let state = {
     startedAt: Date.now(),
     pageKey: null
   },
+  postClickRefresh: { timer: null, lastSeq: 0 },
+  lastInteraction: { at: 0, eventType: null, actionId: null },
   loopGuard: {
     // key -> count
     counts: {},
@@ -25,6 +27,33 @@ let state = {
     lastKey: null
   }
 };
+
+function schedulePostProgressRefresh(seq) {
+  const s = Number.isFinite(seq) ? seq : 0;
+  if (s <= state.postClickRefresh.lastSeq) return;
+  state.postClickRefresh.lastSeq = s;
+
+  if (state.postClickRefresh.timer) {
+    clearTimeout(state.postClickRefresh.timer);
+    state.postClickRefresh.timer = null;
+  }
+
+  // DOM updates after a click can be async (framework re-render). Re-capture once more quietly.
+  state.postClickRefresh.timer = setTimeout(async () => {
+    state.postClickRefresh.timer = null;
+    if (state.busy) return;
+    if (state.walkthroughCompleted) return;
+    if (!state.context) return;
+    if (!Array.isArray(state.steps) || state.steps.length === 0) return;
+
+    try {
+      await captureContext();
+      await refreshCurrentStepHelp({ reason: 'dom' });
+    } catch {
+      // ignore
+    }
+  }, 650);
+}
 
 const el = (id) => document.getElementById(id);
 
@@ -594,29 +623,47 @@ async function fetchSuggestedSteps() {
 
 async function handlePageEvent(event) {
   const at = Number.isFinite(event?.at) ? event.at : Date.now();
-  if (at <= state.lastPageEventAt) return;
-  state.lastPageEventAt = at;
   if (state.busy) return;
 
+  const eventType = typeof event?.eventType === 'string' ? event.eventType : 'click';
+  const eventActionId = typeof event?.actionId === 'string' ? event.actionId.trim() : '';
+
+  // De-dupe: a click on a label often causes an immediate change on the input.
+  const li = state.lastInteraction || { at: 0, eventType: null, actionId: null };
+  if (
+    eventType === 'change' &&
+    li.eventType === 'click' &&
+    li.actionId &&
+    eventActionId &&
+    li.actionId === eventActionId &&
+    at - (li.at || 0) < 350
+  ) {
+    return;
+  }
+
+  if (at <= state.lastPageEventAt) return;
+  state.lastPageEventAt = at;
+  state.lastInteraction = { at, eventType, actionId: eventActionId || null };
+
   if (state.walkthroughCompleted) {
-    tracePush({ type: 'page_click_ignored_completed', label: event?.label || null });
+    tracePush({ type: `page_${eventType}_ignored_completed`, label: event?.label || null });
     return;
   }
 
   tracePush({
-    type: 'page_click',
+    type: `page_${eventType}`,
     label: event?.label || null,
     kind: event?.kind || null,
     urlBefore: event?.urlBefore || null,
     urlAfter: event?.urlAfter || null
   });
 
-  // Always re-capture context after a click on the page.
+  // Always re-capture context after a meaningful page interaction.
   await captureContext({ statusText: 'Updating context…' });
 
   // Mark progress if the click label matches current step actionLabel.
   const clickedLabel = typeof event?.label === 'string' ? event.label.trim() : '';
-  const clickedActionId = typeof event?.actionId === 'string' ? event.actionId.trim() : '';
+  const clickedActionId = eventActionId;
   const currentStep = state.steps[state.currentStepIndex];
   const expected = typeof currentStep?.actionLabel === 'string' ? currentStep.actionLabel.trim() : '';
   const expectedActionId = typeof currentStep?.actionId === 'string' ? currentStep.actionId.trim() : '';
@@ -624,21 +671,53 @@ async function handlePageEvent(event) {
     ? Boolean(clickedActionId && clickedActionId === expectedActionId)
     : isSameLabel(clickedLabel, expected);
   if (matchedExpected) {
-    state.history.push({ at: Date.now(), type: 'click', label: clickedLabel, matchedStep: state.currentStepIndex });
-    tracePush({ type: 'step_matched_by_click', stepIndex: state.currentStepIndex, actionLabel: expected });
+    state.history.push({ at: Date.now(), type: eventType, label: clickedLabel, matchedStep: state.currentStepIndex });
+    tracePush({ type: `step_matched_by_${eventType}`, stepIndex: state.currentStepIndex, actionLabel: expected });
   } else {
-    state.history.push({ at: Date.now(), type: 'click', label: clickedLabel || null });
-    tracePush({ type: 'click_no_step_match', expectedActionLabel: expected || null });
+    state.history.push({ at: Date.now(), type: eventType, label: clickedLabel || null });
+    tracePush({ type: `${eventType}_no_step_match`, expectedActionLabel: expected || null });
   }
 
   // Step-by-step mode: keep the plan stable; just ask the model if we're on track.
   setStatus('');
-  await refreshCurrentStepHelp({ reason: matchedExpected ? 'progress' : 'click' });
+  await refreshCurrentStepHelp({ reason: matchedExpected ? 'progress' : eventType });
+
+  if (matchedExpected) schedulePostProgressRefresh(event?.seq);
 }
 
 async function markDone() {
   if (state.steps.length === 0) return;
   if (state.walkthroughCompleted) return;
+
+  const finished = confirm(
+    'Da li si uspeo i želiš da završiš sesiju?\n\nOK = Da (završi i očisti sesiju)\nCancel = Ne (nastavi sa sledećim korakom)'
+  );
+  if (finished) {
+    try {
+      await fetch(`${state.backendUrl}/api/session/end`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: state.session, url: state.context?.url || null })
+      });
+    } catch {
+      // ignore
+    }
+
+    try {
+      await chrome.runtime.sendMessage({ type: 'CLEAR_TAB_STATE' });
+    } catch {
+      // ignore
+    }
+
+    try {
+      el('goal').value = '';
+    } catch {
+      // ignore
+    }
+
+    startNewSession({ reason: 'completed', pageKey: null, keepContext: false, setStatusText: 'Session ended — cleared.' });
+    return;
+  }
 
   tracePush({ type: 'step_completed_manual', stepIndex: state.currentStepIndex });
   setStatus('');
