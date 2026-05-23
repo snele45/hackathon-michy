@@ -47,6 +47,22 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return;
       }
 
+      if (msg?.type === 'HIGHLIGHT_ACTION') {
+        const tab = await getActiveTab();
+        if (!tab?.id) {
+          sendResponse({ ok: false, error: 'No active tab found.' });
+          return;
+        }
+
+        await ensureContentScript(tab.id);
+        const result = await chrome.tabs.sendMessage(tab.id, {
+          type: 'HIGHLIGHT_ACTION',
+          label: msg?.label
+        });
+        sendResponse(result);
+        return;
+      }
+
       sendResponse({ ok: false, error: 'Unknown message.' });
     } catch (e) {
       sendResponse({ ok: false, error: e?.message || 'Error' });
