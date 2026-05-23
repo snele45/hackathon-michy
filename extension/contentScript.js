@@ -131,6 +131,200 @@ function buildDomHintPath(el) {
   }
 }
 
+function fnv1aHex(str) {
+  // Deterministic small hash for stable actionId (non-crypto).
+  let h = 0x811c9dc5;
+  const s = (str || '').toString();
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    // 32-bit FNV-1a multiply
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+function safeCssValue(v) {
+  const s = (v || '').toString();
+  if (!s) return '';
+  // Escape quotes/backslashes minimally.
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function buildBestSelectorForElement(el) {
+  if (!el) return null;
+  try {
+    const tag = (el.tagName || '').toLowerCase();
+    const id = getAttr(el, 'id');
+    if (id) return `#${CSS.escape(id)}`;
+
+    const testid = getAttr(el, 'data-testid');
+    if (testid) return `${tag || '*'}[data-testid="${safeCssValue(testid)}"]`;
+
+    const name = getAttr(el, 'name');
+    if (name) return `${tag || '*'}[name="${safeCssValue(name)}"]`;
+
+    const aria = getAttr(el, 'aria-label');
+    if (aria) return `${tag || '*'}[aria-label="${safeCssValue(aria)}"]`;
+
+    // As a last resort, fall back to a short dom hint path.
+    const domPath = buildDomHintPath(el);
+    return domPath ? { domPath } : null;
+  } catch {
+    return null;
+  }
+}
+
+function computeActionId(el) {
+  if (!el) return null;
+  try {
+    const tag = (el.tagName || '').toLowerCase();
+    const kind = describeElementKind(el);
+    const label = getVisibleActionLabel(el).trim().replace(/\s+/g, ' ').slice(0, 120);
+    const href = safeHrefForElement(el) || '';
+    const attrs = pickInterestingAttrs(el);
+    const domPath = buildDomHintPath(el);
+    const sig = [tag, kind || '', label || '', href, attrs.testid || '', attrs.id || '', attrs.ariaLabel || '', domPath].join('|');
+    return `a_${fnv1aHex(sig)}`;
+  } catch {
+    return null;
+  }
+}
+
+function elementEnabledState(el) {
+  if (!el) return { enabled: null, disabledReason: null };
+  try {
+    const disabled = el.matches?.(':disabled,[aria-disabled="true"]') || false;
+    if (disabled) return { enabled: false, disabledReason: 'disabled' };
+    return { enabled: true, disabledReason: null };
+  } catch {
+    return { enabled: null, disabledReason: null };
+  }
+}
+
+function elementSelectionState(el) {
+  if (!el) return {};
+  try {
+    const expandedRaw = el.getAttribute?.('aria-expanded');
+    const checkedRaw = el.getAttribute?.('aria-checked');
+    const pressedRaw = el.getAttribute?.('aria-pressed');
+    const selectedRaw = el.getAttribute?.('aria-selected');
+
+    const expanded = expandedRaw === 'true' ? true : expandedRaw === 'false' ? false : null;
+    const checked = checkedRaw === 'true' ? true : checkedRaw === 'false' ? false : null;
+    const pressed = pressedRaw === 'true' ? true : pressedRaw === 'false' ? false : null;
+    const selected = selectedRaw === 'true' ? true : selectedRaw === 'false' ? false : null;
+
+    const out = {};
+    if (expanded !== null) out.expanded = expanded;
+    if (checked !== null) out.checked = checked;
+    if (pressed !== null) out.pressed = pressed;
+    if (selected !== null) out.selected = selected;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function rectForElement(el) {
+  try {
+    const r = el.getBoundingClientRect();
+    return {
+      x: Math.round(r.left),
+      y: Math.round(r.top),
+      w: Math.round(r.width),
+      h: Math.round(r.height)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function semanticTypeForElement(el) {
+  const kind = describeElementKind(el);
+  const tag = (el?.tagName || '').toLowerCase();
+  if (kind) return kind;
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return 'field';
+  return 'action';
+}
+
+function buildUiActionsAndTargets() {
+  const selector = `${getClickableSelectors()}, input, textarea, select, [contenteditable="true"]`;
+  const nodes = [...document.querySelectorAll(selector)].slice(0, 900);
+
+  const uiActions = [];
+  const visualTargets = [];
+  const actionIndex = new Map();
+
+  for (const el of nodes) {
+    if (!isElementVisible(el)) continue;
+
+    const tag = (el.tagName || '').toLowerCase();
+    const kind = semanticTypeForElement(el);
+    let label = getVisibleActionLabel(el).trim().replace(/\s+/g, ' ');
+
+    if (!label) {
+      if (tag === 'input' || tag === 'textarea') {
+        label = (getAttr(el, 'placeholder') || getAttr(el, 'aria-label') || getAttr(el, 'name') || '').trim();
+      } else if (tag === 'select') {
+        label = (getAttr(el, 'aria-label') || getAttr(el, 'name') || '').trim();
+      }
+    }
+
+    // Filter noisy clickable labels, but keep fields.
+    if ((kind === 'button' || kind === 'link' || kind === 'tab' || kind === 'menuitem' || kind === 'action') && label) {
+      if (label.length > 70) continue;
+      if (isNoisyActionLabel(label)) continue;
+    }
+
+    const actionId = computeActionId(el);
+    if (!actionId) continue;
+
+    const area = areaHintForElement(el);
+    const rect = rectForElement(el);
+    const { enabled } = elementEnabledState(el);
+    const sel = elementSelectionState(el);
+
+    const container = el.closest('nav, [role="navigation"], aside, header, form, [role="dialog"], [role="menu"], [role="listbox"], [role="tablist"], [role="toolbar"]');
+    const containerId = container ? buildDomHintPath(container) : null;
+
+    const domRef = buildBestSelectorForElement(el);
+    actionIndex.set(actionId, {
+      domRef,
+      label: label || null
+    });
+
+    uiActions.push({
+      actionId,
+      label: label || null,
+      semanticType: kind || null,
+      visible: true,
+      enabled: typeof enabled === 'boolean' ? enabled : null,
+      area: area || null,
+      containerId: containerId || null,
+      rect,
+      ...sel
+    });
+
+    // Keep a smaller list for visualTargets.
+    if (visualTargets.length < 50 && rect && rect.w >= 6 && rect.h >= 6) {
+      visualTargets.push({
+        id: actionId,
+        number: visualTargets.length + 1,
+        label: label || null,
+        kind: kind || null,
+        enabled: typeof enabled === 'boolean' ? enabled : null,
+        visible: true,
+        area: area || null,
+        rect
+      });
+    }
+
+    if (uiActions.length >= 140) break;
+  }
+
+  return { uiActions, visualTargets, actionIndex };
+}
+
 function sanitizeHtmlSnippet(html) {
   const raw = (html || '').toString();
   if (!raw) return '';
@@ -940,13 +1134,129 @@ function scoreActionElement(el) {
   return score;
 }
 
+function inferPreferredAreaFromHint(hintText) {
+  const t = (hintText || '').toString().toLowerCase();
+  if (!t) return null;
+  if (t.includes('desn') || t.includes('right')) return 'right';
+  if (t.includes('lev') || t.includes('left')) return 'left';
+  if (t.includes('gore') || t.includes('top')) return 'top';
+  if (t.includes('dole') || t.includes('bottom')) return 'bottom';
+  if (t.includes('sred') || t.includes('main') || t.includes('central')) return 'main';
+  return null;
+}
+
+function extractHintKeywords(hintText, max = 6) {
+  const raw = (hintText || '').toString();
+  if (!raw) return [];
+
+  const stop = new Set([
+    'u', 'na', 'i', 'ili', 'pa', 'da', 'je', 'se', 'su', 'od', 'do', 'za', 'sa', 'bez', 'kao', 'ovo', 'to', 'taj', 'ta', 'te',
+    'the', 'and', 'or', 'to', 'of', 'in', 'on', 'a', 'an', 'is', 'are', 'be', 'with', 'by', 'then',
+    'klikni', 'klik', 'click', 'unesi', 'upiši', 'upisi', 'type', 'enter', 'polje', 'field', 'panel', 'tab', 'menu', 'dugme', 'button'
+  ]);
+
+  const tokens = raw
+    .replace(/[^\p{L}\p{N}\s_-]+/gu, ' ')
+    .split(/\s+/g)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => x.toLowerCase())
+    .filter((x) => x.length >= 4)
+    .filter((x) => !stop.has(x));
+
+  return [...new Set(tokens)].slice(0, max);
+}
+
+function extractHintPhrases(hintText, max = 4) {
+  const raw = (hintText || '').toString();
+  if (!raw) return [];
+  const phrases = [];
+  const re = /"([^"]{2,80})"|'([^']{2,80})'/g;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    const p = (m[1] || m[2] || '').trim();
+    if (!p) continue;
+    phrases.push(p);
+    if (phrases.length >= max) break;
+  }
+  return [...new Set(phrases)];
+}
+
+function scoreCandidateWithHint(el, label, hintText) {
+  let score = scoreActionElement(el);
+
+  const preferredArea = inferPreferredAreaFromHint(hintText);
+  if (preferredArea) {
+    const a = areaHintForElement(el);
+    if (a === preferredArea) score += 10;
+    else score -= 2;
+  }
+
+  const keywords = extractHintKeywords(hintText, 6);
+  const phrases = extractHintPhrases(hintText, 4);
+  if (keywords.length) {
+    const container =
+      el.closest('aside, nav, header, main, form, section, [role="dialog"], [role="region"], [aria-label], [data-testid]') ||
+      el.parentElement;
+    let hay = '';
+    try {
+      hay = (container?.innerText || '').toString().slice(0, 800).toLowerCase();
+    } catch {
+      hay = '';
+    }
+
+    // Also include nearby attributes (often unique per panel/component).
+    let attrHay = '';
+    try {
+      const role = (container?.getAttribute?.('role') || '').toString();
+      const testid = (container?.getAttribute?.('data-testid') || '').toString();
+      const aria = (container?.getAttribute?.('aria-label') || '').toString();
+      const id = (container?.getAttribute?.('id') || '').toString();
+      const cls = (container?.className || '').toString();
+      attrHay = `${role} ${testid} ${aria} ${id} ${cls}`.toLowerCase().slice(0, 400);
+    } catch {
+      attrHay = '';
+    }
+
+    let hits = 0;
+    for (const k of keywords) {
+      if (hay.includes(k) || attrHay.includes(k)) hits++;
+    }
+    score += Math.min(10, hits * 3);
+
+    // Stronger phrase matches (usually the exact row/panel label the user should look for).
+    if (phrases.length) {
+      let phraseHits = 0;
+      const hayNorm = normalizeTextForMatch(hay);
+      const attrNorm = normalizeTextForMatch(attrHay);
+      for (const p of phrases) {
+        const pn = normalizeTextForMatch(p);
+        if (!pn) continue;
+        if (hayNorm.includes(pn) || attrNorm.includes(pn)) phraseHits++;
+      }
+      score += Math.min(18, phraseHits * 6);
+    }
+  }
+
+  // Prefer aria-label exact match when available.
+  try {
+    const aria = (el.getAttribute?.('aria-label') || '').trim();
+    if (aria && label && normalizeTextForMatch(aria) === normalizeTextForMatch(label)) score += 4;
+  } catch {
+    // ignore
+  }
+
+  return score;
+}
+
 // Make this script safe to inject multiple times in the same page.
 // NOTE: Avoid top-level `let`/`const` that would redeclare and throw.
 var __obGlobal = globalThis;
 __obGlobal.__obState = __obGlobal.__obState || {
   clickSeq: 0,
   clickListenerInstalled: false,
-  messageListenerInstalled: false
+  messageListenerInstalled: false,
+  actionIndex: new Map()
 };
 
 function emitPageEvent(event) {
@@ -967,6 +1277,7 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
       if (!isElementVisible(targetEl)) return;
 
       const label = getVisibleActionLabel(targetEl).trim().replace(/\s+/g, ' ') || null;
+      const actionId = computeActionId(targetEl);
       const kind = describeElementKind(targetEl);
       const urlBefore = location.href;
       const seq = ++__obGlobal.__obState.clickSeq;
@@ -975,6 +1286,7 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
       emitPageEvent({
         kind,
         label,
+        actionId,
         urlBefore,
         urlAfter: null,
         at,
@@ -988,6 +1300,7 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
             emitPageEvent({
               kind,
               label,
+              actionId,
               urlBefore,
               urlAfter,
               at: Date.now(),
@@ -1004,9 +1317,11 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
   __obGlobal.__obState.clickListenerInstalled = true;
 }
 
-function findBestActionElementByLabel(label) {
+function findBestActionElementByLabel(label, options = {}) {
   const target = (label || '').trim().replace(/\s+/g, ' ');
   if (!target) return null;
+
+  const hintText = options?.hintText || '';
 
   const candidates = [...document.querySelectorAll(getClickableSelectors())];
 
@@ -1031,7 +1346,7 @@ function findBestActionElementByLabel(label) {
 
   if (exactMatches.length === 1) return { el: exactMatches[0].el, matchedLabel: target };
   if (exactMatches.length > 1) {
-    exactMatches.sort((a, b) => scoreActionElement(b.el) - scoreActionElement(a.el));
+    exactMatches.sort((a, b) => scoreCandidateWithHint(b.el, target, hintText) - scoreCandidateWithHint(a.el, target, hintText));
     return { el: exactMatches[0].el, matchedLabel: target };
   }
 
@@ -1043,7 +1358,7 @@ function findBestActionElementByLabel(label) {
   // If multiple partial matches, pick the shortest label (often the closest).
   if (partialMatches.length > 1) {
     partialMatches.sort((a, b) => {
-      const scoreDiff = scoreActionElement(b.el) - scoreActionElement(a.el);
+      const scoreDiff = scoreCandidateWithHint(b.el, partialMatches[0]?.label || target, hintText) - scoreCandidateWithHint(a.el, partialMatches[0]?.label || target, hintText);
       if (scoreDiff) return scoreDiff;
       return (a.label || '').length - (b.label || '').length;
     });
@@ -1063,10 +1378,12 @@ function getVisibleFieldLabel(fieldEl) {
   return '';
 }
 
-function findBestFieldElementByLabel(label) {
+function findBestFieldElementByLabel(label, options = {}) {
   const target = (label || '').trim().replace(/\s+/g, ' ');
   if (!target) return null;
   const normalizedTarget = target.toLowerCase();
+  const hintText = options?.hintText || '';
+  const preferredArea = inferPreferredAreaFromHint(hintText);
 
   const candidates = [...document.querySelectorAll('input, textarea, select, [contenteditable="true"]')];
   let exact = null;
@@ -1075,6 +1392,12 @@ function findBestFieldElementByLabel(label) {
   for (const el of candidates) {
     if (!isElementVisible(el)) continue;
     if (!isLikelyTextField(el)) continue;
+    if (preferredArea) {
+      const a = areaHintForElement(el);
+      if (a && a !== preferredArea) {
+        // Not a hard filter; just de-prioritize by skipping on exact match only.
+      }
+    }
     const t = getVisibleFieldLabel(el).trim().replace(/\s+/g, ' ');
     if (!t) continue;
     if (t.length > 60) continue;
@@ -1091,26 +1414,168 @@ function findBestFieldElementByLabel(label) {
   if (exact) return { el: exact, matchedLabel: target };
   if (partialMatches.length === 1) return { el: partialMatches[0].el, matchedLabel: partialMatches[0].label };
   if (partialMatches.length > 1) {
-    partialMatches.sort((a, b) => a.label.length - b.label.length);
+    partialMatches.sort((a, b) => {
+      // Use similar hint scoring for fields when ambiguous.
+      const as = scoreCandidateWithHint(a.el, a.label, hintText);
+      const bs = scoreCandidateWithHint(b.el, b.label, hintText);
+      const diff = bs - as;
+      if (diff) return diff;
+      return a.label.length - b.label.length;
+    });
     return { el: partialMatches[0].el, matchedLabel: partialMatches[0].label };
   }
+
+  // Heuristic fallback: sometimes the "label" is just visible text in a row,
+  // while the actual input has no <label for>, placeholder, or name.
+  // In that case, locate the text element and pick the nearest visible text field in the same container.
+  const near = findNearestFieldByVisibleText(target);
+  if (near?.el) return { el: near.el, matchedLabel: near.matchedLabel || target };
 
   return null;
 }
 
-function findBestAnyElementByQuery(query) {
+function normalizeTextForMatch(t) {
+  // Normalize for robust matching: lower-case, collapse whitespace, strip punctuation.
+  return (t || '')
+    .toString()
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s_-]+/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenizeForMatch(t) {
+  const n = normalizeTextForMatch(t);
+  if (!n) return [];
+  return n
+    .split(/[\s_-]+/g)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function pickDistinctiveToken(t) {
+  // Pick the last meaningful token (often the disambiguator: bool/byte/etc.).
+  const toks = tokenizeForMatch(t);
+  if (!toks.length) return null;
+  const stop = new Set(['device', 'tag', 'item', 'value', 'field', 'input']);
+  for (let i = toks.length - 1; i >= 0; i--) {
+    const tok = toks[i];
+    if (!tok) continue;
+    if (tok.length < 3) continue;
+    if (stop.has(tok)) continue;
+    return tok;
+  }
+  return toks[toks.length - 1] || null;
+}
+
+function findNearestFieldByVisibleText(labelText) {
+  const target = (labelText || '').trim().replace(/\s+/g, ' ');
+  if (!target) return null;
+  const normalizedTarget = normalizeTextForMatch(target);
+  const targetTokens = tokenizeForMatch(target);
+  const distinctive = pickDistinctiveToken(target);
+
+  // Search common text-bearing nodes for the label.
+  const candidates = [
+    ...document.querySelectorAll('label, legend, summary, h1, h2, h3, h4, p, li, td, th, span, div')
+  ];
+
+  let best = null;
+  for (const el of candidates.slice(0, 1800)) {
+    if (!isElementVisible(el)) continue;
+    const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    if (text.length > 140) continue;
+
+    const normalized = normalizeTextForMatch(text);
+    if (!normalized) continue;
+
+    // Compute a match score instead of "first hit wins".
+    let matchScore = 0;
+    if (normalized === normalizedTarget) matchScore += 80;
+    else if (normalized.includes(normalizedTarget)) matchScore += 45;
+    else {
+      // Token overlap fallback
+      const tokens = tokenizeForMatch(normalized);
+      let overlap = 0;
+      for (const tok of targetTokens) if (tok && tokens.includes(tok)) overlap++;
+      if (overlap < Math.min(2, Math.max(1, targetTokens.length))) continue;
+      matchScore += overlap * 12;
+    }
+
+    // Soft boost if the distinctive token matches.
+    if (distinctive && normalized.includes(distinctive)) matchScore += 12;
+
+    // Find a nearby container and search for an input/textarea/select/contenteditable within.
+    const container = el.closest('tr, li, [role="row"], [role="listitem"], .row, [data-row], div, section, form, fieldset') ||
+      el.parentElement;
+    if (!container) continue;
+
+    const fieldNodes = [
+      ...container.querySelectorAll('input, textarea, select, [contenteditable="true"]')
+    ];
+
+    // Prefer the field that is closest to the matched label element.
+    const elRect = (() => {
+      try {
+        return el.getBoundingClientRect();
+      } catch {
+        return null;
+      }
+    })();
+
+    for (const f of fieldNodes) {
+      if (!isElementVisible(f)) continue;
+      if (!isLikelyTextField(f)) continue;
+      if (f.matches?.(':disabled,[aria-disabled="true"]')) continue;
+
+      const rect = (() => {
+        try {
+          return f.getBoundingClientRect();
+        } catch {
+          return null;
+        }
+      })();
+
+      const area = rect ? rect.width * rect.height : 0;
+      let distancePenalty = 0;
+      if (rect && elRect) {
+        const dx = Math.abs((rect.left + rect.width / 2) - (elRect.left + elRect.width / 2));
+        const dy = Math.abs((rect.top + rect.height / 2) - (elRect.top + elRect.height / 2));
+        distancePenalty = (dx + dy) / 30;
+      }
+
+      const score = matchScore + Math.min(20, area / 150) - distancePenalty;
+      if (!best || score > best.score) {
+        best = { el: f, score, matchedLabel: text };
+      }
+    }
+  }
+
+  return best;
+}
+
+function findBestAnyElementByQuery(query, options = {}) {
   // 1) try actions, 2) try fields, 3) try headings/labels/text.
   const q = (query || '').trim();
   if (!q) return null;
 
-  const action = findBestActionElementByLabel(q);
+  const hintText = options?.hintText || '';
+
+  const action = findBestActionElementByLabel(q, { hintText });
   if (action?.el) return { ...action, kind: 'action' };
 
-  const field = findBestFieldElementByLabel(q);
+  const field = findBestFieldElementByLabel(q, { hintText });
   if (field?.el) return { ...field, kind: 'field' };
 
+  // Extra fallback: treat query as visible text near an unlabeled field.
+  const near = findNearestFieldByVisibleText(q);
+  if (near?.el) return { el: near.el, matchedLabel: near.matchedLabel || q, kind: 'field' };
+
   const normalizedTarget = q.toLowerCase();
-  const textCandidates = [...document.querySelectorAll('h1,h2,h3,label,legend,summary,button,a,[role="button"],[role="link"],p,li')];
+  const textCandidates = [...document.querySelectorAll('h1,h2,h3,h4,label,legend,summary,button,a,[role="button"],[role="link"],[role="menuitem"],[role="option"],[tabindex],p,li,td,th,span,div')];
   const matches = [];
   for (const el of textCandidates.slice(0, 500)) {
     if (!isElementVisible(el)) continue;
@@ -1281,6 +1746,10 @@ function highlightElement(element) {
   if (!element) return;
   element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
 
+  const RED = 'rgba(220, 38, 38, 0.98)';
+  const RED_SOFT = 'rgba(220, 38, 38, 0.20)';
+  const DIM = 'rgba(0, 0, 0, 0.35)';
+
   const prev = {
     outline: element.style.outline,
     outlineOffset: element.style.outlineOffset,
@@ -1290,10 +1759,11 @@ function highlightElement(element) {
   };
 
   element.style.transition = 'outline 120ms ease-in-out, box-shadow 120ms ease-in-out, background-color 120ms ease-in-out';
-  element.style.outline = '4px solid rgba(37, 99, 235, 0.98)';
-  element.style.outlineOffset = '6px';
-  element.style.backgroundColor = 'rgba(37, 99, 235, 0.10)';
-  element.style.boxShadow = '0 0 0 6px rgba(37, 99, 235, 0.12)';
+  // Stronger, more intuitive highlight: red outline + "spotlight" dimming around the element.
+  element.style.outline = `6px solid ${RED}`;
+  element.style.outlineOffset = '8px';
+  element.style.backgroundColor = RED_SOFT;
+  element.style.boxShadow = `0 0 0 10px ${RED_SOFT}, 0 0 0 9999px ${DIM}`;
 
   setTimeout(() => {
     element.style.outline = prev.outline;
@@ -1301,7 +1771,7 @@ function highlightElement(element) {
     element.style.transition = prev.transition;
     element.style.backgroundColor = prev.backgroundColor;
     element.style.boxShadow = prev.boxShadow;
-  }, 2000);
+  }, 2400);
 }
 
 function getThemeHint() {
@@ -1338,6 +1808,10 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
       const navItems = collectNavItems(navigationGroups);
       const navLinkCandidates = collectNavLinkCandidates();
       const interactiveContainers = collectInteractiveContainers();
+      const { uiActions, visualTargets, actionIndex } = buildUiActionsAndTargets();
+
+      // Update index so highlight-by-actionId works.
+      __obGlobal.__obState.actionIndex = actionIndex;
 
       // Prefer nav items first for primaryActions (walkthrough oriented).
       const otherActions = actionCandidates.map((a) => a.label).filter(Boolean);
@@ -1359,6 +1833,8 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
         primaryFields: fieldCandidates.map((f) => f.label).filter(Boolean).slice(0, 20),
         dropdownTriggers,
         openMenuGroups,
+        uiActions,
+        visualTargets,
         themeHint: getThemeHint()
       };
 
@@ -1368,9 +1844,32 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
 
     if (msg?.type === 'HIGHLIGHT_ACTION') {
       (async () => {
+        const actionId = msg?.actionId;
         const label = msg?.label;
-        // Backwards-compatible: allow highlighting fields too.
-        let match = findBestAnyElementByQuery(label);
+        const hintText = msg?.hintText;
+
+        // Prefer deterministic actionId lookup.
+        if (typeof actionId === 'string' && actionId) {
+          const entry = __obGlobal.__obState?.actionIndex?.get?.(actionId);
+          const domRef = entry?.domRef;
+
+          let el = null;
+          if (typeof domRef === 'string') {
+            el = document.querySelector(domRef);
+          } else if (domRef && typeof domRef === 'object' && domRef.domPath) {
+            // Fallback: locate by label if needed.
+            el = null;
+          }
+
+          if (el && isElementVisible(el)) {
+            highlightElement(el);
+            sendResponse({ ok: true, matchedLabel: entry?.label || null, kind: describeElementKind(el) || null });
+            return;
+          }
+        }
+
+        // Backwards-compatible: allow highlighting fields too by label.
+        let match = findBestAnyElementByQuery(label, { hintText });
         if (!match?.el) {
           // If it's inside a menu that isn't open yet, try opening dropdowns.
           match = await tryOpenMenusThenFind(label);

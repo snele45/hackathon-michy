@@ -31,6 +31,21 @@ async function ensureContentScript(tabId) {
   });
 }
 
+async function captureScreenshotForTab(tab) {
+  try {
+    if (!tab?.windowId) return null;
+    // JPEG keeps payload smaller than PNG.
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: 'jpeg',
+      quality: 60
+    });
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return null;
+    return dataUrl;
+  } catch {
+    return null;
+  }
+}
+
 const recentEventsByTab = new Map();
 const navGraphByTab = new Map();
 
@@ -163,7 +178,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
         const navKey = `navGraph:${tab.id}`;
         const navGraph = navGraphByTab.get(tab.id) || (await storageGet([navKey]))?.[navKey] || [];
-        sendResponse({ ok: true, context: { ...context, recentEvents, navGraph } });
+
+        const includeScreenshot = Boolean(msg?.includeScreenshot);
+        const screenshot = includeScreenshot ? await captureScreenshotForTab(tab) : null;
+
+        sendResponse({ ok: true, context: { ...context, recentEvents, navGraph, screenshot } });
         return;
       }
 
@@ -177,7 +196,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         await ensureContentScript(tab.id);
         const result = await chrome.tabs.sendMessage(tab.id, {
           type: 'HIGHLIGHT_ACTION',
-          label: msg?.label
+          label: msg?.label,
+          actionId: msg?.actionId,
+          hintText: msg?.hintText
         });
         sendResponse(result);
         return;

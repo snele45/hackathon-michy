@@ -1,6 +1,10 @@
 let state = {
   backendUrl: 'http://localhost:8787',
   context: null,
+  screenshotCache: {
+    pageKey: null,
+    screenshot: null
+  },
   steps: [],
   currentStepIndex: 0,
   history: [],
@@ -85,14 +89,15 @@ function render() {
     li.appendChild(details);
 
     const actionLabel = typeof s.actionLabel === 'string' ? s.actionLabel.trim() : '';
-    if (actionLabel) {
+    const actionId = typeof s.actionId === 'string' ? s.actionId.trim() : '';
+    if (actionLabel || actionId) {
       const meta = document.createElement('div');
       meta.className = 'stepMeta';
 
       const preview = document.createElement('button');
       preview.type = 'button';
       preview.className = 'actionPreview';
-      preview.textContent = actionLabel;
+      preview.textContent = actionLabel || actionId;
 
       const candidate = findActionCandidate(actionLabel);
       applyPreviewStyle(preview, candidate);
@@ -100,13 +105,18 @@ function render() {
       preview.addEventListener('click', async () => {
         setStatus('');
         try {
-          const r = await chrome.runtime.sendMessage({ type: 'HIGHLIGHT_ACTION', label: actionLabel });
+          const r = await chrome.runtime.sendMessage({
+            type: 'HIGHLIGHT_ACTION',
+            label: actionLabel || null,
+            actionId: actionId || null,
+            hintText: typeof s?.details === 'string' ? s.details : null
+          });
           if (!r?.ok) {
             setStatus(r?.error || 'Could not locate that element on the page.');
             return;
           }
 
-          if (r?.matchedLabel && r.matchedLabel !== actionLabel) {
+          if (r?.matchedLabel && actionLabel && r.matchedLabel !== actionLabel) {
             setStatus(`Located: ${r.matchedLabel}`);
           }
         } catch {
@@ -128,13 +138,8 @@ function render() {
 
   const doneBtn = el('done');
   const hasSteps = state.steps.length > 0;
-  const isLast = hasSteps && state.currentStepIndex === state.steps.length - 1;
   doneBtn.disabled = !hasSteps || state.walkthroughCompleted;
-  doneBtn.textContent = state.walkthroughCompleted
-    ? 'Completed'
-    : isLast
-      ? 'Finish walkthrough'
-      : 'Complete step →';
+  doneBtn.textContent = state.walkthroughCompleted ? 'Completed' : 'Done';
   doneBtn.classList.toggle('primary', hasSteps && !state.walkthroughCompleted);
 }
 
@@ -179,7 +184,8 @@ function resetAiContext({ reason, keepContext }) {
 
   el('summary').textContent = '';
   el('clarifying').textContent = '';
-  el('currentHelp').textContent = '';
+  const helpEl = el('currentHelp');
+  if (helpEl) helpEl.textContent = '';
 
   tracePush({ type: 'session_reset', reason: reason || 'manual' });
 }
@@ -238,34 +244,30 @@ function sanitizeStep(s) {
   if (!s || typeof s !== 'object') return null;
   const title = typeof s.title === 'string' ? s.title.trim() : '';
   const details = typeof s.details === 'string' ? s.details.trim() : '';
+  const actionId = typeof s.actionId === 'string' ? s.actionId.trim() : '';
   const actionLabel = typeof s.actionLabel === 'string' ? s.actionLabel.trim() : '';
-  if (!title && !details && !actionLabel) return null;
+  const visualTargetNumber = Number.isFinite(s.visualTargetNumber) ? s.visualTargetNumber : null;
+  if (!title && !details && !actionLabel && !actionId) return null;
   return {
     title: title || 'Next step',
     details,
+    ...(actionId ? { actionId } : {}),
     ...(actionLabel ? { actionLabel } : {})
+    ,...(visualTargetNumber ? { visualTargetNumber } : {})
   };
 }
 
-function appendNextStepFromResponse(data, { source }) {
+function setSingleStepFromResponse(data, { source }) {
   if (!data || typeof data !== 'object') return false;
   if (!Array.isArray(data.steps) || data.steps.length === 0) return false;
 
   const candidate = sanitizeStep(data.steps[0]);
   if (!candidate) return false;
 
-  const last = state.steps[state.steps.length - 1];
-  if (last) {
-    const sameAction = isSameLabel(last.actionLabel || '', candidate.actionLabel || '');
-    const sameTitle = (normalizeLabel(last.title || '').toLowerCase() || '') ===
-      (normalizeLabel(candidate.title || '').toLowerCase() || '');
-    if (sameAction && (candidate.actionLabel || '') && (last.actionLabel || '')) return false;
-    if (sameTitle && !(candidate.actionLabel || '')) return false;
-  }
-
-  state.steps.push(candidate);
-  state.currentStepIndex = Math.max(0, state.steps.length - 1);
-  tracePush({ type: 'step_appended', source: source || 'unknown', stepsCount: state.steps.length });
+  // Always show exactly one active step.
+  state.steps = [candidate];
+  state.currentStepIndex = 0;
+  tracePush({ type: 'step_set_single', source: source || 'unknown' });
   return true;
 }
 
@@ -327,7 +329,7 @@ function applyPreviewStyle(buttonEl, candidate) {
 
 async function captureContext({ statusText } = {}) {
   if (typeof statusText === 'string') setStatus(statusText);
-  const result = await chrome.runtime.sendMessage({ type: 'CAPTURE_CONTEXT' });
+  const result = await chrome.runtime.sendMessage({ type: 'CAPTURE_CONTEXT', includeScreenshot: true });
   if (!result?.ok) {
     setStatus(result?.error || 'Failed to capture context.');
     return;
@@ -351,6 +353,25 @@ async function captureContext({ statusText } = {}) {
   }
 
   state.context = result.context;
+
+  // Screenshot is a first-class multimodal input.
+  // If capture failed to produce it transiently, reuse the last screenshot for the same page key.
+  if (state.context) {
+    const hasShot = typeof state.context.screenshot === 'string' && state.context.screenshot.startsWith('data:image/');
+    if (hasShot) {
+      state.screenshotCache.pageKey = newPageKey || null;
+      state.screenshotCache.screenshot = state.context.screenshot;
+      state.context.screenshotStale = false;
+    } else if (
+      newPageKey &&
+      state.screenshotCache.pageKey === newPageKey &&
+      typeof state.screenshotCache.screenshot === 'string'
+    ) {
+      state.context.screenshot = state.screenshotCache.screenshot;
+      state.context.screenshotStale = true;
+    }
+  }
+
   setThemeFromHint(state.context?.themeHint);
   tracePush({ type: 'context_captured', url: state.context?.url || null });
   render();
@@ -378,7 +399,10 @@ async function explainNextStep() {
 
   el('summary').textContent = 'Thinking…';
   el('clarifying').textContent = '';
-  el('currentHelp').textContent = '';
+  {
+    const helpEl = el('currentHelp');
+    if (helpEl) helpEl.textContent = '';
+  }
   setStatus('');
   const isPlan = state.steps.length === 0;
   tracePush({ type: 'explain_requested', mode: isPlan ? 'plan' : 'step' });
@@ -386,6 +410,7 @@ async function explainNextStep() {
   const payload = {
     goal,
     context: state.context,
+    screenshot: state.context?.screenshot || null,
     history: state.history,
     currentStepIndex: state.currentStepIndex,
     mode: isPlan ? 'plan' : 'step',
@@ -418,22 +443,18 @@ async function explainNextStep() {
   // New behavior: build steps incrementally.
   // - First request (plan mode): take the single returned step as step[0]
   // - Later (step mode): append next step only when server returns it
+  let stepSet = false;
   if (Array.isArray(data.steps) && data.steps.length > 0) {
-    if (isPlan) {
-      state.steps = [];
-      appendNextStepFromResponse(data, { source: 'plan' });
-      tracePush({ type: 'steps_initialized_incremental', stepsCount: state.steps.length });
-    } else {
-      appendNextStepFromResponse(data, { source: 'explain_step' });
-    }
+    stepSet = setSingleStepFromResponse(data, { source: isPlan ? 'plan' : 'explain_step' }) || stepSet;
   }
 
-  if (Number.isFinite(data.currentStepIndex)) {
+  if (!stepSet && Number.isFinite(data.currentStepIndex)) {
     state.currentStepIndex = Math.max(0, Math.min(data.currentStepIndex, Math.max(0, state.steps.length - 1)));
   }
 
   if (typeof data.currentStepHelp === 'string') {
-    el('currentHelp').textContent = data.currentStepHelp;
+    const helpEl = el('currentHelp');
+    if (helpEl) helpEl.textContent = data.currentStepHelp;
   }
 
   state.history.push({
@@ -462,6 +483,7 @@ async function refreshCurrentStepHelp({ reason }) {
     const payload = {
       goal,
       context: state.context,
+      screenshot: state.context?.screenshot || null,
       history: state.history,
       currentStepIndex: state.currentStepIndex,
       mode: 'step',
@@ -483,11 +505,14 @@ async function refreshCurrentStepHelp({ reason }) {
     // - On progress, server may return exactly 1 next step; append it.
     // - Otherwise keep steps stable and only refresh help.
     if (typeof data.summary === 'string') el('summary').textContent = data.summary;
-    if (typeof data.currentStepHelp === 'string') el('currentHelp').textContent = data.currentStepHelp;
+    if (typeof data.currentStepHelp === 'string') {
+      const helpEl = el('currentHelp');
+      if (helpEl) helpEl.textContent = data.currentStepHelp;
+    }
 
-    appendNextStepFromResponse(data, { source: `refresh:${reason || 'unknown'}` });
+    const stepSet = setSingleStepFromResponse(data, { source: `refresh:${reason || 'unknown'}` });
 
-    if (Number.isFinite(data.currentStepIndex)) {
+    if (!stepSet && Number.isFinite(data.currentStepIndex)) {
       state.currentStepIndex = Math.max(0, Math.min(data.currentStepIndex, Math.max(0, state.steps.length - 1)));
     }
 
@@ -591,9 +616,13 @@ async function handlePageEvent(event) {
 
   // Mark progress if the click label matches current step actionLabel.
   const clickedLabel = typeof event?.label === 'string' ? event.label.trim() : '';
+  const clickedActionId = typeof event?.actionId === 'string' ? event.actionId.trim() : '';
   const currentStep = state.steps[state.currentStepIndex];
   const expected = typeof currentStep?.actionLabel === 'string' ? currentStep.actionLabel.trim() : '';
-  const matchedExpected = isSameLabel(clickedLabel, expected);
+  const expectedActionId = typeof currentStep?.actionId === 'string' ? currentStep.actionId.trim() : '';
+  const matchedExpected = expectedActionId
+    ? Boolean(clickedActionId && clickedActionId === expectedActionId)
+    : isSameLabel(clickedLabel, expected);
   if (matchedExpected) {
     state.history.push({ at: Date.now(), type: 'click', label: clickedLabel, matchedStep: state.currentStepIndex });
     tracePush({ type: 'step_matched_by_click', stepIndex: state.currentStepIndex, actionLabel: expected });
@@ -613,6 +642,7 @@ async function markDone() {
 
   tracePush({ type: 'step_completed_manual', stepIndex: state.currentStepIndex });
   setStatus('');
+  await captureContext({ statusText: 'Updating context…' });
   await refreshCurrentStepHelp({ reason: 'progress_manual' });
 }
 

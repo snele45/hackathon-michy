@@ -3,7 +3,7 @@
   "name": "Onboarding Buddy",
   "version": "0.1.0",
   "description": "Side-panel buddy that explains what to do step-by-step based on the current page.",
-  "permissions": ["sidePanel", "activeTab", "scripting", "storage"],
+  "permissions": ["sidePanel", "activeTab", "tabs", "scripting", "storage"],
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_title": "Onboarding Buddy"
