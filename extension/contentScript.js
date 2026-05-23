@@ -141,6 +141,58 @@ function collectNavItems(navigationGroups) {
   return [...new Set(out)].slice(0, 25);
 }
 
+function safeNavUrl(rawHref) {
+  try {
+    if (!rawHref) return null;
+    const u = new URL(rawHref, location.href);
+    // Avoid leaking tokens in query strings.
+    return `${u.origin}${u.pathname}${u.hash || ''}`.slice(0, 160);
+  } catch {
+    return null;
+  }
+}
+
+function collectNavLinkCandidates() {
+  // Best-effort: collect visible anchors in detected navigation containers
+  // and capture their destination (without query params).
+  const containers = [];
+  const sidebar =
+    document.querySelector('aside') ||
+    document.querySelector('.sidebar') ||
+    document.querySelector('.main-sidebar') ||
+    document.querySelector('[class*="sidebar"]');
+  if (sidebar) containers.push(sidebar);
+
+  const navs = [...document.querySelectorAll('nav, [role="navigation"]')].slice(0, 6);
+  for (const n of navs) containers.push(n);
+
+  const out = [];
+  const seen = new Set();
+
+  for (const container of containers) {
+    if (!container || !isElementVisible(container)) continue;
+    const groupKey = container.className || container.id || container.tagName.toLowerCase();
+    const area = areaHintForElement(container);
+    const anchors = [...container.querySelectorAll('a[href]')].slice(0, 220);
+    for (const a of anchors) {
+      if (!isElementVisible(a)) continue;
+      const label = getVisibleActionLabel(a).replace(/\s+/g, ' ').trim();
+      if (!label) continue;
+      if (label.length > 60) continue;
+      if (isNoisyActionLabel(label)) continue;
+      const dest = safeNavUrl(a.getAttribute('href'));
+      if (!dest) continue;
+      const key = `${label.toLowerCase()}|${dest}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ label, to: dest, area, groupKey: groupKey || null });
+      if (out.length >= 35) return out;
+    }
+  }
+
+  return out;
+}
+
 function getAssociatedLabelText(fieldEl) {
   if (!fieldEl) return '';
 
@@ -411,6 +463,55 @@ function findClickableAncestor(node) {
   return el.closest(getClickableSelectors());
 }
 
+function isNavContainer(el) {
+  if (!el) return false;
+  const container = el.closest('nav, [role="navigation"], aside, .sidebar, .main-sidebar, [class*="sidebar"]');
+  return Boolean(container && isElementVisible(container));
+}
+
+function safeHrefForElement(el) {
+  try {
+    if (!el) return null;
+    const tag = el.tagName?.toLowerCase?.() || '';
+    if (tag !== 'a') return null;
+    const raw = el.getAttribute('href');
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === '#') return null;
+    if (/^javascript:/i.test(trimmed)) return null;
+    const u = new URL(trimmed, location.href);
+    return `${u.origin}${u.pathname}${u.hash || ''}`.slice(0, 180);
+  } catch {
+    return null;
+  }
+}
+
+function scoreActionElement(el) {
+  if (!el) return -999;
+  let score = 0;
+
+  // Prefer navigation/sidebar items when ambiguous.
+  if (isNavContainer(el)) score += 6;
+
+  const href = safeHrefForElement(el);
+  if (href) {
+    score += 4;
+
+    // Prefer links that lead somewhere different than the current page.
+    const current = safeNavUrl(location.href);
+    if (current && href !== current) score += 2;
+  }
+
+  // Prefer more specific (shorter) labels when multiple matches exist.
+  const label = getVisibleActionLabel(el).trim().replace(/\s+/g, ' ');
+  if (label) score += Math.max(0, 6 - Math.min(6, Math.floor(label.length / 10)));
+
+  // De-prioritize disabled controls.
+  if (el.matches?.(':disabled,[aria-disabled="true"]')) score -= 4;
+
+  return score;
+}
+
 // Make this script safe to inject multiple times in the same page.
 // NOTE: Avoid top-level `let`/`const` that would redeclare and throw.
 var __obGlobal = globalThis;
@@ -483,7 +584,7 @@ function findBestActionElementByLabel(label) {
 
   const normalizedTarget = target.toLowerCase();
 
-  let exact = null;
+  const exactMatches = [];
   const partialMatches = [];
   for (const el of candidates) {
     if (!isElementVisible(el)) continue;
@@ -492,15 +593,19 @@ function findBestActionElementByLabel(label) {
     if (t.length > 60) continue;
     const normalized = t.toLowerCase();
     if (normalized === normalizedTarget) {
-      exact = el;
-      break;
+      exactMatches.push({ el, label: t });
+      continue;
     }
     if (normalized.includes(normalizedTarget)) {
       partialMatches.push({ el, label: t });
     }
   }
 
-  if (exact) return { el: exact, matchedLabel: target };
+  if (exactMatches.length === 1) return { el: exactMatches[0].el, matchedLabel: target };
+  if (exactMatches.length > 1) {
+    exactMatches.sort((a, b) => scoreActionElement(b.el) - scoreActionElement(a.el));
+    return { el: exactMatches[0].el, matchedLabel: target };
+  }
 
   // Safe fallback: if the partial match is unique, use it.
   if (partialMatches.length === 1) {
@@ -509,7 +614,11 @@ function findBestActionElementByLabel(label) {
 
   // If multiple partial matches, pick the shortest label (often the closest).
   if (partialMatches.length > 1) {
-    partialMatches.sort((a, b) => a.label.length - b.label.length);
+    partialMatches.sort((a, b) => {
+      const scoreDiff = scoreActionElement(b.el) - scoreActionElement(a.el);
+      if (scoreDiff) return scoreDiff;
+      return (a.label || '').length - (b.label || '').length;
+    });
     return { el: partialMatches[0].el, matchedLabel: partialMatches[0].label };
   }
 
@@ -588,6 +697,67 @@ function findBestAnyElementByQuery(query) {
     matches.sort((a, b) => a.label.length - b.label.length);
     return { el: matches[0].el, matchedLabel: matches[0].label, kind: 'text' };
   }
+  return null;
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function tryPressEscape() {
+  try {
+    const evt = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true });
+    document.dispatchEvent(evt);
+  } catch {
+    // ignore
+  }
+}
+
+async function tryOpenMenusThenFind(label) {
+  const target = (label || '').trim();
+  if (!target) return null;
+
+  let triggers = collectDropdownTriggers();
+  if (!Array.isArray(triggers) || triggers.length === 0) return null;
+
+  // Prefer collapsed triggers first.
+  triggers = triggers
+    .filter((t) => t?.label && !isNoisyActionLabel(t.label))
+    .sort((a, b) => {
+      const ae = a?.expanded === false ? 0 : a?.expanded === true ? 2 : 1;
+      const be = b?.expanded === false ? 0 : b?.expanded === true ? 2 : 1;
+      return ae - be;
+    });
+
+  const max = Math.min(6, triggers.length);
+  for (let i = 0; i < max; i++) {
+    const t = triggers[i];
+    const triggerMatch = findBestActionElementByLabel(t.label);
+    const triggerEl = triggerMatch?.el;
+    if (!triggerEl) continue;
+    if (!isElementVisible(triggerEl)) continue;
+
+    // Open.
+    try {
+      triggerEl.click();
+    } catch {
+      // ignore
+    }
+    await sleep(90);
+
+    const match = findBestActionElementByLabel(target);
+    if (match?.el) return match;
+
+    // Close (best-effort).
+    tryPressEscape();
+    try {
+      triggerEl.click();
+    } catch {
+      // ignore
+    }
+    await sleep(70);
+  }
+
   return null;
 }
 
@@ -738,6 +908,7 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
       const openMenuGroups = collectOpenMenuGroups();
       const navigationGroups = collectNavigationGroups();
       const navItems = collectNavItems(navigationGroups);
+      const navLinkCandidates = collectNavLinkCandidates();
 
       // Prefer nav items first for primaryActions (walkthrough oriented).
       const otherActions = actionCandidates.map((a) => a.label).filter(Boolean);
@@ -750,6 +921,7 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
         headings: collectHeadings(),
         actionCandidates,
         navItems,
+        navLinkCandidates,
         navigationGroups,
         primaryActions: dedupedPrimaryActions,
         fieldLabels: collectFieldLabels(),
@@ -765,16 +937,23 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
     }
 
     if (msg?.type === 'HIGHLIGHT_ACTION') {
-      const label = msg?.label;
-      // Backwards-compatible: allow highlighting fields too.
-      const match = findBestAnyElementByQuery(label);
-      if (!match?.el) {
-        sendResponse({ ok: false, error: 'Could not find a visible element with that label.' });
-        return;
-      }
-      highlightElement(match.el);
-      sendResponse({ ok: true, matchedLabel: match.matchedLabel, kind: match.kind || null });
-      return;
+      (async () => {
+        const label = msg?.label;
+        // Backwards-compatible: allow highlighting fields too.
+        let match = findBestAnyElementByQuery(label);
+        if (!match?.el) {
+          // If it's inside a menu that isn't open yet, try opening dropdowns.
+          match = await tryOpenMenusThenFind(label);
+        }
+
+        if (!match?.el) {
+          sendResponse({ ok: false, error: 'Could not find a visible element with that label.' });
+          return;
+        }
+        highlightElement(match.el);
+        sendResponse({ ok: true, matchedLabel: match.matchedLabel, kind: match.kind || null });
+      })();
+      return true;
     }
 
     if (msg?.type === 'HIGHLIGHT_FUZZY') {

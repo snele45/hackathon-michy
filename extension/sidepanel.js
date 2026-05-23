@@ -48,11 +48,13 @@ function render() {
         {
           headings: ctx.headings,
           navItems: ctx.navItems,
+          navLinkCandidates: ctx.navLinkCandidates,
           navigationGroups: ctx.navigationGroups,
           primaryActions: ctx.primaryActions,
           primaryFields: ctx.primaryFields,
           dropdownTriggers: ctx.dropdownTriggers,
           openMenuGroups: ctx.openMenuGroups,
+          navGraph: ctx.navGraph,
           walkthrough: {
             currentStepIndex: state.currentStepIndex,
             stepsCount: state.steps.length,
@@ -342,14 +344,16 @@ async function explainNextStep() {
   el('clarifying').textContent = '';
   el('currentHelp').textContent = '';
   setStatus('');
-  tracePush({ type: 'explain_requested', mode: state.steps.length === 0 ? 'plan' : 'step' });
+  const isPlan = state.steps.length === 0;
+  tracePush({ type: 'explain_requested', mode: isPlan ? 'plan' : 'step' });
 
   const payload = {
     goal,
     context: state.context,
     history: state.history,
     currentStepIndex: state.currentStepIndex,
-    mode: state.steps.length === 0 ? 'plan' : 'step',
+    mode: isPlan ? 'plan' : 'step',
+    steps: state.steps,
     session: state.session
   };
 
@@ -375,7 +379,8 @@ async function explainNextStep() {
   if (typeof data.summary === 'string') el('summary').textContent = data.summary;
   if (data.clarifyingQuestion) el('clarifying').textContent = `Question: ${data.clarifyingQuestion}`;
 
-  if (Array.isArray(data.steps) && data.steps.length > 0) {
+  // Only set/replace the plan when we're in "plan" mode.
+  if (isPlan && Array.isArray(data.steps) && data.steps.length > 0) {
     state.steps = data.steps;
     tracePush({ type: 'steps_set', stepsCount: state.steps.length });
   }
@@ -398,6 +403,54 @@ async function explainNextStep() {
   state.busy = false;
 
   render();
+}
+
+async function refreshCurrentStepHelp({ reason }) {
+  const goal = el('goal')?.value?.trim() || '';
+  if (!goal) return;
+  if (!state.context) return;
+  if (!Array.isArray(state.steps) || state.steps.length === 0) return;
+  if (state.busy) return;
+
+  state.busy = true;
+  render();
+
+  try {
+    const payload = {
+      goal,
+      context: state.context,
+      history: state.history,
+      currentStepIndex: state.currentStepIndex,
+      mode: 'step',
+      steps: state.steps,
+      reason: reason || null,
+      session: state.session
+    };
+
+    const resp = await fetch(`${state.backendUrl}/api/explain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!resp.ok) return;
+    const data = await resp.json();
+
+    // Keep steps stable; only update help + optional step index.
+    if (typeof data.summary === 'string') el('summary').textContent = data.summary;
+    if (typeof data.currentStepHelp === 'string') el('currentHelp').textContent = data.currentStepHelp;
+
+    if (Number.isFinite(data.currentStepIndex)) {
+      state.currentStepIndex = Math.max(0, Math.min(data.currentStepIndex, Math.max(0, state.steps.length - 1)));
+    }
+
+    tracePush({ type: 'step_help_refreshed', reason: reason || null });
+  } catch {
+    // ignore
+  } finally {
+    state.busy = false;
+    render();
+  }
 }
 
 function stepsSignature(steps) {
@@ -514,71 +567,9 @@ async function handlePageEvent(event) {
     tracePush({ type: 'click_no_step_match', expectedActionLabel: expected || null });
   }
 
-  // If we already have steps, refresh them after each click.
-  const goal = el('goal')?.value?.trim() || '';
-  if (!goal) {
-    setStatus('');
-    render();
-    return;
-  }
-  if (!Array.isArray(state.steps) || state.steps.length === 0) {
-    setStatus('');
-    render();
-    return;
-  }
-
-  if (!state.autoRefreshEnabled) {
-    setStatus('');
-    render();
-    return;
-  }
-
-  state.busy = true;
-  setStatus('Preparing new steps…');
-  const suggested = await fetchSuggestedSteps();
-  state.busy = false;
-
-  if (!suggested?.steps) {
-    setStatus('');
-    render();
-    return;
-  }
-
-  const similarity = stepsSimilarity(state.steps, suggested.steps);
-  const currentSig = stepsSignature(state.steps);
-  const newSig = stepsSignature(suggested.steps);
-
-  const url = state.context?.url || '';
-  const obsKey = loopKey({
-    currentStepIndex: state.currentStepIndex,
-    expectedActionLabel: expected,
-    stepsSig: newSig || currentSig,
-    url
-  });
-  const loopCount = recordLoopObservation(obsKey, { isProgress: matchedExpected });
-
-  // If we keep seeing the same situation without progress, pause auto-refresh.
-  if (!matchedExpected && loopCount >= 3) {
-    state.autoRefreshEnabled = false;
-    tracePush({ type: 'loop_detected', key: obsKey, count: loopCount });
-    setStatus('Seems stuck in a loop. Use “Explain next step” manually or re-capture context.');
-    render();
-    return;
-  }
-
-  // If they are effectively the same, do nothing to avoid confusion.
-  // Threshold tuned: "pretty similar" ~ 85% overlap.
-  if (newSig && newSig !== currentSig && similarity < 0.85) {
-    state.steps = suggested.steps;
-    state.currentStepIndex = Math.max(0, Math.min(state.currentStepIndex, Math.max(0, state.steps.length - 1)));
-    tracePush({ type: 'steps_refreshed', similarity });
-    setStatus('');
-  } else {
-    tracePush({ type: 'steps_suppressed_similar', similarity });
-    setStatus('');
-  }
-
-  render();
+  // Step-by-step mode: keep the plan stable; just ask the model if we're on track.
+  setStatus('');
+  await refreshCurrentStepHelp({ reason: matchedExpected ? 'progress' : 'click' });
 }
 
 function markDone() {

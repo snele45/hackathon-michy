@@ -38,7 +38,8 @@ app.post('/api/explain', async (req, res) => {
       context,
       history,
       currentStepIndex,
-      mode
+      mode,
+      steps
     } = req.body || {};
 
     if (!goal || typeof goal !== 'string') {
@@ -52,6 +53,22 @@ app.post('/api/explain', async (req, res) => {
       headings: Array.isArray(context?.headings) ? context.headings.slice(0, 10) : [],
       primaryActions: Array.isArray(context?.primaryActions) ? context.primaryActions.slice(0, 20) : [],
       navItems: Array.isArray(context?.navItems) ? context.navItems.slice(0, 25) : [],
+      navLinkCandidates: Array.isArray(context?.navLinkCandidates)
+        ? context.navLinkCandidates.slice(0, 35).map((x) => ({
+            label: typeof x?.label === 'string' ? x.label.slice(0, 80) : null,
+            to: typeof x?.to === 'string' ? x.to.slice(0, 180) : null,
+            area: x?.area || null,
+            groupKey: x?.groupKey || null
+          }))
+        : [],
+      navGraph: Array.isArray(context?.navGraph)
+        ? context.navGraph.slice(0, 40).map((e) => ({
+            label: typeof e?.label === 'string' ? e.label.slice(0, 80) : null,
+            kind: e?.kind || null,
+            from: typeof e?.from === 'string' ? e.from.slice(0, 180) : null,
+            to: typeof e?.to === 'string' ? e.to.slice(0, 180) : null
+          }))
+        : [],
       navigationGroups: Array.isArray(context?.navigationGroups)
         ? context.navigationGroups.slice(0, 4).map((g) => ({
             kind: g?.kind || null,
@@ -107,13 +124,21 @@ app.post('/api/explain', async (req, res) => {
     };
 
     const safeHistory = Array.isArray(history) ? history.slice(-10) : [];
+    const safePlanSteps = Array.isArray(steps)
+      ? steps.slice(0, 18).map((s) => ({
+          title: typeof s?.title === 'string' ? s.title.slice(0, 120) : '',
+          details: typeof s?.details === 'string' ? s.details.slice(0, 260) : '',
+          actionLabel: typeof s?.actionLabel === 'string' ? s.actionLabel.slice(0, 80) : null
+        }))
+      : [];
 
     const prompt = [
       'You are an onboarding buddy for a clerk using a specific web software.',
       'Goal: provide step-by-step guidance grounded in the provided page context.',
       '',
       'Rules:',
-      '- Do not invent UI elements that are not suggested by context; if unsure, ask a clarifying question.',
+      '- Do not invent UI elements that are not suggested by context.',
+      '- Do NOT ask clarifying questions. If unsure, provide your best guess with a safe fallback ("if you do not see X, try Y") and set clarifyingQuestion to null.',
       '- Keep steps actionable and short.',
       '- Prefer referencing common UI affordances: menus, tabs, buttons, search boxes, forms.',
       '- Use the Goal text to choose the most relevant actions from Context.primaryActions (e.g., if goal mentions Instagram/social media/templates, prefer matching visible labels like "Templates" or "Social media See all" if present).',
@@ -126,7 +151,7 @@ app.post('/api/explain', async (req, res) => {
       'Return JSON schema:',
       '{',
       '  "summary": string,',
-      '  "clarifyingQuestion": string | null,',
+      '  "clarifyingQuestion": null,',
       '  "steps": Array<{"title": string, "details": string, "actionLabel"?: string}>,',
       '  "currentStepIndex": number,',
       '  "currentStepHelp": string',
@@ -135,12 +160,23 @@ app.post('/api/explain', async (req, res) => {
       `Mode: ${mode || 'auto'}`,
       `CurrentStepIndex: ${Number.isFinite(currentStepIndex) ? currentStepIndex : 0}`,
       '',
+      'Mode semantics:',
+      '- If Mode is "plan": return a full ordered steps array (3-8 steps).',
+      '- If Mode is "step": DO NOT re-plan. Keep "steps" as an empty array [], and only update summary/currentStepHelp/currentStepIndex.',
+      '- In "step" mode you MUST assess whether the last user interaction moved toward the goal (relevance check) using Context.url/title/headings/recentEvents/navGraph.',
+      '  - If it seems relevant progress: say so briefly in summary and give the next concrete action.',
+      '  - If it seems NOT relevant: say why, and suggest a correction (which nav item/menu to use).',
+      '',
       'Guidance for steps:',
       '- If a step requires clicking a button/link, set actionLabel to the exact visible label.',
       '- If a step requires filling a field, set actionLabel to the field label OR placeholder text (what the user sees).',
       '- Prefer an EXACT match from Context.primaryActions or Context.primaryFields (case-insensitive match is ok) so the UI can locate/highlight it.',
       '- Prefer visible text. If an element is icon-only with no visible label, using its aria-label or title is acceptable as a fallback.',
       '- If you cannot confidently provide an exact actionLabel from context, omit actionLabel and instead describe WHERE it is (left sidebar/top bar/right panel/main area) using Context.navigationGroups[*].area and the surrounding labels.',
+      '- Use Context.navLinkCandidates (label -> destination) and Context.navGraph (observed clicks -> URL) to disambiguate navigation. When helpful, mention the destination path in details, but keep actionLabel as the visible label.',
+      '',
+      'Current plan steps (may be empty):',
+      JSON.stringify(safePlanSteps),
       '',
       'Context JSON:',
       JSON.stringify(safeContext),
@@ -168,6 +204,13 @@ app.post('/api/explain', async (req, res) => {
         currentStepIndex: 0,
         currentStepHelp: text
       });
+    }
+
+    // Enforce UX: no questions, and keep plan stable in step mode.
+    if (data && typeof data === 'object') {
+      data.clarifyingQuestion = null;
+      const effectiveMode = (mode || '').toLowerCase();
+      if (effectiveMode === 'step') data.steps = [];
     }
 
     return res.json(data);

@@ -32,6 +32,7 @@ async function ensureContentScript(tabId) {
 }
 
 const recentEventsByTab = new Map();
+const navGraphByTab = new Map();
 
 async function storageSet(obj) {
   try {
@@ -67,6 +68,57 @@ async function appendRecentEvent(tabId, event) {
   return list;
 }
 
+function normalizeNavUrl(rawUrl) {
+  try {
+    if (!rawUrl) return null;
+    const u = new URL(rawUrl);
+    // Remove query params to avoid leaking tokens.
+    return `${u.origin}${u.pathname}${u.hash || ''}`.slice(0, 180);
+  } catch {
+    return null;
+  }
+}
+
+async function appendNavEdge(tabId, event) {
+  const urlAfterRaw = event?.urlAfter;
+  if (!urlAfterRaw) return null;
+
+  const urlBefore = normalizeNavUrl(event?.urlBefore) || null;
+  const urlAfter = normalizeNavUrl(urlAfterRaw) || null;
+  if (!urlAfter) return null;
+  if (urlBefore && urlAfter === urlBefore) return null;
+
+  const label = typeof event?.label === 'string' ? event.label.trim().slice(0, 80) : null;
+  const kind = typeof event?.kind === 'string' ? event.kind : null;
+
+  const key = `navGraph:${tabId}`;
+  let list = Array.isArray(navGraphByTab.get(tabId)) ? navGraphByTab.get(tabId).slice() : null;
+  if (!list) {
+    const stored = await storageGet([key]);
+    list = Array.isArray(stored?.[key]) ? stored[key] : [];
+  }
+
+  const edge = {
+    at: Date.now(),
+    label,
+    kind,
+    from: urlBefore,
+    to: urlAfter
+  };
+
+  const sig = `${(label || '').toLowerCase()}|${kind || ''}|${urlBefore || ''}|${urlAfter}`;
+  const exists = list.some((e) => {
+    const s = `${((e?.label || '') + '').toLowerCase()}|${e?.kind || ''}|${e?.from || ''}|${e?.to || ''}`;
+    return s === sig;
+  });
+  if (!exists) list.push(edge);
+
+  list = list.slice(-40);
+  navGraphByTab.set(tabId, list);
+  await storageSet({ [key]: list });
+  return list;
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {
@@ -84,6 +136,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
 
         await appendRecentEvent(tabId, event);
+  await appendNavEdge(tabId, event);
 
         // Broadcast to any open sidepanel.
         try {
@@ -107,7 +160,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const context = await chrome.tabs.sendMessage(tab.id, { type: 'GET_CONTEXT' });
         const key = `recentEvents:${tab.id}`;
         const recentEvents = recentEventsByTab.get(tab.id) || (await storageGet([key]))?.[key] || [];
-        sendResponse({ ok: true, context: { ...context, recentEvents } });
+
+        const navKey = `navGraph:${tab.id}`;
+        const navGraph = navGraphByTab.get(tab.id) || (await storageGet([navKey]))?.[navKey] || [];
+        sendResponse({ ok: true, context: { ...context, recentEvents, navGraph } });
         return;
       }
 
