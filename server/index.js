@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
+import { MemoryStore, buildMemoryDocuments, defaultMemoryFilePath } from './memoryStore.js';
 
 dotenv.config();
 
@@ -9,6 +10,8 @@ const PORT = Number.parseInt(process.env.PORT || '8787', 10);
 const OPENAI_API_BASE_URL = process.env.OPENAI_API_BASE_URL || 'https://api.openai.com/v1';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+const OPENAI_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
+const MEMORY_MAX_DOCS = Number.parseInt(process.env.MEMORY_MAX_DOCS || '250', 10);
 
 const client = OPENAI_API_KEY
   ? new OpenAI({
@@ -19,7 +22,12 @@ const client = OPENAI_API_KEY
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '15mb' }));
+
+const memoryStorePromise = MemoryStore.load({
+  filePath: defaultMemoryFilePath(),
+  maxDocs: Number.isFinite(MEMORY_MAX_DOCS) ? MEMORY_MAX_DOCS : 250
+});
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -36,6 +44,7 @@ app.post('/api/explain', async (req, res) => {
     const {
       goal,
       context,
+      screenshot,
       history,
       currentStepIndex,
       mode,
@@ -81,6 +90,30 @@ app.post('/api/explain', async (req, res) => {
       const t = (text || '').toLowerCase();
       if (!t) return false;
       return goalTokens.some((k) => t.includes(k));
+    }
+
+    function scoreUiAction(a, goalTokens) {
+      if (!a || typeof a !== 'object') return -999;
+      let score = 0;
+
+      const label = (a.label || '').toString().toLowerCase();
+      const semanticType = (a.semanticType || '').toString().toLowerCase();
+      const area = (a.area || '').toString().toLowerCase();
+
+      for (const k of goalTokens) {
+        if (label.includes(k)) score += 8;
+      }
+
+      if (area === 'left' || area === 'top') score += 2;
+      if (semanticType.includes('nav') || semanticType.includes('tab')) score += 1;
+
+      if (a.enabled === false) score -= 6;
+      if (a.visible === false) score -= 8;
+
+      // Prefer labeled targets.
+      if (label) score += Math.min(3, Math.floor(label.length / 12));
+
+      return score;
     }
 
     const goalTokens = tokenizeGoal(goal);
@@ -177,6 +210,47 @@ app.post('/api/explain', async (req, res) => {
             items: Array.isArray(g?.items) ? g.items.slice(0, 12) : []
           }))
         : [],
+      uiActions: Array.isArray(context?.uiActions)
+        ? context.uiActions.slice(0, 180).map((a) => ({
+            actionId: typeof a?.actionId === 'string' ? a.actionId.slice(0, 40) : null,
+            label: typeof a?.label === 'string' ? a.label.slice(0, 90) : null,
+            semanticType: typeof a?.semanticType === 'string' ? a.semanticType.slice(0, 30) : null,
+            visible: typeof a?.visible === 'boolean' ? a.visible : null,
+            enabled: typeof a?.enabled === 'boolean' ? a.enabled : null,
+            area: a?.area || null,
+            containerId: typeof a?.containerId === 'string' ? a.containerId.slice(0, 120) : null,
+            rect: a?.rect && typeof a.rect === 'object'
+              ? {
+                  x: Number.isFinite(a.rect.x) ? a.rect.x : null,
+                  y: Number.isFinite(a.rect.y) ? a.rect.y : null,
+                  w: Number.isFinite(a.rect.w) ? a.rect.w : null,
+                  h: Number.isFinite(a.rect.h) ? a.rect.h : null
+                }
+              : null,
+            expanded: typeof a?.expanded === 'boolean' ? a.expanded : null,
+            selected: typeof a?.selected === 'boolean' ? a.selected : null,
+            checked: typeof a?.checked === 'boolean' ? a.checked : null
+          }))
+        : [],
+      visualTargets: Array.isArray(context?.visualTargets)
+        ? context.visualTargets.slice(0, 60).map((t) => ({
+            id: typeof t?.id === 'string' ? t.id.slice(0, 40) : null,
+            number: Number.isFinite(t?.number) ? t.number : null,
+            label: typeof t?.label === 'string' ? t.label.slice(0, 90) : null,
+            kind: typeof t?.kind === 'string' ? t.kind.slice(0, 30) : null,
+            enabled: typeof t?.enabled === 'boolean' ? t.enabled : null,
+            visible: typeof t?.visible === 'boolean' ? t.visible : null,
+            area: t?.area || null,
+            rect: t?.rect && typeof t.rect === 'object'
+              ? {
+                  x: Number.isFinite(t.rect.x) ? t.rect.x : null,
+                  y: Number.isFinite(t.rect.y) ? t.rect.y : null,
+                  w: Number.isFinite(t.rect.w) ? t.rect.w : null,
+                  h: Number.isFinite(t.rect.h) ? t.rect.h : null
+                }
+              : null
+          }))
+        : [],
       recentEvents: Array.isArray(context?.recentEvents)
         ? context.recentEvents
             .slice(-10)
@@ -223,6 +297,15 @@ app.post('/api/explain', async (req, res) => {
       })
       .slice(0, 16);
 
+    // Rank UI actions by goal relevance and keep only top candidates.
+    const rankedUiActions = (safeContext.uiActions || [])
+      .map((a) => ({ ...a, relevanceScore: scoreUiAction(a, goalTokens) }))
+      .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
+      .slice(0, 60);
+
+    focused.uiActions = rankedUiActions;
+    focused.visualTargets = (safeContext.visualTargets || []).slice(0, 40);
+
     // Prefer focused context when we have enough signal.
     const contextForModel = {
       ...focused,
@@ -239,14 +322,80 @@ app.post('/api/explain', async (req, res) => {
       themeHint: safeContext.themeHint
     };
 
+    // ---- Workflow normalization (minimal) ----
+    const workflowState = {
+      goal: goal.slice(0, 500),
+      mode: typeof mode === 'string' ? mode : 'auto',
+      reason: typeof reason === 'string' ? reason : '',
+      url: contextForModel.url || null,
+      title: contextForModel.title || null
+    };
+
     const safeHistory = Array.isArray(history) ? history.slice(-10) : [];
     const safePlanSteps = Array.isArray(steps)
       ? steps.slice(0, 18).map((s) => ({
           title: typeof s?.title === 'string' ? s.title.slice(0, 120) : '',
-          details: typeof s?.details === 'string' ? s.details.slice(0, 260) : '',
-          actionLabel: typeof s?.actionLabel === 'string' ? s.actionLabel.slice(0, 80) : null
+          details: typeof s?.details === 'string' ? s.details.slice(0, 900) : '',
+          actionLabel: typeof s?.actionLabel === 'string' ? s.actionLabel.slice(0, 80) : null,
+          actionId: typeof s?.actionId === 'string' ? s.actionId.slice(0, 40) : null
         }))
       : [];
+
+    const previousStep = safePlanSteps?.[0] || null;
+
+    // ---- Knowledge Graph + Vector DB (persistent memory) ----
+    let retrievedMemory = [];
+    let graphNeighborhood = null;
+    try {
+      const memoryStore = await memoryStorePromise;
+      memoryStore.updateGraphFromContext({
+        url: contextForModel.url,
+        title: contextForModel.title,
+        uiActions: contextForModel.uiActions,
+        navGraph: contextForModel.navGraph,
+        recentEvents: contextForModel.recentEvents
+      });
+
+      graphNeighborhood = memoryStore.getGraphNeighborhood({ url: contextForModel.url, maxEdges: 18 });
+
+      const docs = buildMemoryDocuments({
+        goal: workflowState.goal,
+        url: workflowState.url,
+        uiActions: contextForModel.uiActions,
+        previousStep,
+        returnedStep: null
+      });
+
+      // Store a small slice of semantic extraction results.
+      await memoryStore.upsertDocuments({
+        client,
+        embeddingModel: OPENAI_EMBEDDING_MODEL,
+        documents: docs
+      });
+
+      const headingsText = Array.isArray(contextForModel.headings) ? contextForModel.headings.slice(0, 8).join(' | ') : '';
+      const queryText = [
+        `Goal: ${workflowState.goal}`,
+        `URL: ${workflowState.url || ''}`,
+        `Title: ${workflowState.title || ''}`,
+        `Reason: ${workflowState.reason}`,
+        `Headings: ${headingsText}`
+      ].join('\n');
+
+      retrievedMemory = await memoryStore.querySimilar({
+        client,
+        embeddingModel: OPENAI_EMBEDDING_MODEL,
+        queryText,
+        hostHint: null,
+        topK: 6
+      });
+
+      await memoryStore.save();
+    } catch (e) {
+      // Memory is best-effort; never block the main guidance.
+      retrievedMemory = [];
+      graphNeighborhood = null;
+    }
 
     const prompt = [
       'You are an onboarding buddy for a clerk using a specific web software.',
@@ -255,7 +404,9 @@ app.post('/api/explain', async (req, res) => {
       'Rules:',
       '- Do not invent UI elements that are not suggested by context.',
       '- Do NOT ask clarifying questions. If unsure, provide your best guess with a safe fallback ("if you do not see X, try Y") and set clarifyingQuestion to null.',
-      '- Keep steps actionable and short.',
+      '- Keep the step title short and actionable.',
+      '- HARD LIMIT: steps[0].details MUST be <= 400 characters. Do not exceed this; optimize wording to fit.',
+      '- details should include: (1) what to click/type, (2) where it is (area/nearby labels), (3) what success looks like, and (4) one short fallback if the UI differs.',
       '- Prefer referencing common UI affordances: menus, tabs, buttons, search boxes, forms.',
       '- Use the Goal text to choose the most relevant actions from Context.primaryActions (e.g., if goal mentions Instagram/social media/templates, prefer matching visible labels like "Templates" or "Social media See all" if present).',
       '- If Context.openMenuGroups includes visible items (dropdown/menu options), prefer selecting an actionLabel from those items when guiding through submenus.',
@@ -270,7 +421,7 @@ app.post('/api/explain', async (req, res) => {
       '{',
       '  "summary": string,',
       '  "clarifyingQuestion": null,',
-      '  "steps": Array<{"title": string, "details": string, "actionLabel"?: string}>,',
+      '  "steps": Array<{"title": string, "details": string, "actionId"?: string, "actionLabel"?: string, "visualTargetNumber"?: number}>,',
       '  "currentStepIndex": number,',
       '  "currentStepHelp": string',
       '}',
@@ -281,16 +432,19 @@ app.post('/api/explain', async (req, res) => {
       '',
       'Mode semantics:',
       '- If Mode is "plan": return exactly 1 next step (the immediate action to take now).',
-      '- If Mode is "step": DO NOT re-plan.',
-      '  - If Reason includes "progress": return exactly 1 next step in "steps" (the next action to take now).',
-      '  - Otherwise (Reason not progress): keep "steps" as an empty array [] and only update summary/currentStepHelp/currentStepIndex.',
+      '- If Mode is "step": DO NOT re-plan. Return exactly 1 next step in "steps" (the next action to take now).',
+      '- Because the UI shows only one active step at a time, always set currentStepIndex to 0.',
       '- In "step" mode you MUST assess whether the last user interaction moved toward the goal (relevance check) using Context.url/title/headings/recentEvents/navGraph.',
       '  - If it seems relevant progress: say so briefly in summary and give the next concrete action.',
       '  - If it seems NOT relevant: say why, and suggest a correction (which nav item/menu to use).',
+      '- If Reason indicates progress (e.g. "progress" or "progress_manual"), do NOT repeat the previous actionId/actionLabel; return the next distinct step.',
       '',
       'Guidance for steps:',
       '- If a step requires clicking a button/link, set actionLabel to the exact visible label.',
       '- If a step requires filling a field, set actionLabel to the field label OR placeholder text (what the user sees).',
+      '- If Context.uiActions exists, prefer returning steps[0].actionId from Context.uiActions.actionId (this makes highlighting deterministic).',
+      '- If Context.visualTargets exists, you may also return visualTargetNumber from the matching visualTargets.number.',
+      '- IMPORTANT: Put the main guidance in steps[0].details and the click target in steps[0].actionLabel. currentStepHelp should be empty or at most a short fallback hint.',
       '- Prefer an EXACT match from Context.primaryActions or Context.primaryFields (case-insensitive match is ok) so the UI can locate/highlight it.',
       '- Prefer visible text. If an element is icon-only with no visible label, using its aria-label or title is acceptable as a fallback.',
       '- If you cannot confidently provide an exact actionLabel from context, omit actionLabel and instead describe WHERE it is (left sidebar/top bar/right panel/main area) using Context.navigationGroups[*].area and the surrounding labels.',
@@ -300,6 +454,18 @@ app.post('/api/explain', async (req, res) => {
       'Current plan steps (may be empty):',
       JSON.stringify(safePlanSteps),
       '',
+      'Previous step (single-step UI):',
+      JSON.stringify(previousStep),
+      '',
+      'Workflow state (normalized):',
+      JSON.stringify(workflowState),
+      '',
+      'Graph neighborhood (knowledge graph, compact):',
+      JSON.stringify(graphNeighborhood),
+      '',
+      'Retrieved memory (vector DB top matches, compact):',
+      JSON.stringify(retrievedMemory),
+      '',
       'Context JSON:',
       JSON.stringify(contextForModel),
       '',
@@ -307,11 +473,41 @@ app.post('/api/explain', async (req, res) => {
       JSON.stringify(safeHistory)
     ].join('\n');
 
-    const response = await client.responses.create({
-      model: OPENAI_MODEL,
-      input: prompt,
-      temperature: 0.2
-    });
+    const hasScreenshot = typeof screenshot === 'string' && screenshot.startsWith('data:image/');
+
+    async function callModel({ withImage, extraInstruction }) {
+      const finalPrompt = extraInstruction ? `${prompt}\n\n${extraInstruction}` : prompt;
+      const input = withImage
+        ? [
+            {
+              role: 'user',
+              content: [
+                { type: 'input_text', text: finalPrompt },
+                { type: 'input_image', image_url: screenshot }
+              ]
+            }
+          ]
+        : finalPrompt;
+
+      return await client.responses.create({
+        model: OPENAI_MODEL,
+        input,
+        temperature: 0.2,
+        max_output_tokens: 520
+      });
+    }
+
+    let response;
+    try {
+      response = await callModel({ withImage: hasScreenshot, extraInstruction: '' });
+    } catch (e) {
+      // Fallback: if model or account doesn't support images, retry text-only.
+      if (hasScreenshot) {
+        response = await callModel({ withImage: false, extraInstruction: '' });
+      } else {
+        throw e;
+      }
+    }
 
     const text = response.output_text?.trim() || '';
 
@@ -328,24 +524,112 @@ app.post('/api/explain', async (req, res) => {
       });
     }
 
-    // Enforce UX: no questions, and keep step mode incremental.
+    // If we just made progress but the model repeated the same action, retry with a stricter instruction.
+    const effectiveReason = typeof reason === 'string' ? reason.toLowerCase() : '';
+    const isProgressReason = effectiveReason.includes('progress');
+    if (isProgressReason && previousStep && data && typeof data === 'object' && Array.isArray(data.steps) && data.steps.length === 1) {
+      const next0 = data.steps[0] || {};
+      const prevLabel = (previousStep.actionLabel || '').toString().trim().toLowerCase();
+      const prevId = (previousStep.actionId || '').toString().trim();
+      const nextLabel = (next0.actionLabel || '').toString().trim().toLowerCase();
+      const nextId = (next0.actionId || '').toString().trim();
+
+      const repeats = (prevId && nextId && prevId === nextId) || (prevLabel && nextLabel && prevLabel === nextLabel);
+      if (repeats) {
+        const extra = [
+          'STRICT RULE: The user completed the previous step.',
+          `Do NOT return the same actionId/actionLabel again (previous actionId=${previousStep.actionId || ''}, actionLabel=${previousStep.actionLabel || ''}).`,
+          'Return the NEXT distinct step toward the Goal.'
+        ].join('\n');
+
+        const retry = await callModel({ withImage: hasScreenshot, extraInstruction: extra });
+        const retryText = retry.output_text?.trim() || '';
+        try {
+          data = JSON.parse(retryText);
+        } catch {
+          // keep original data
+        }
+      }
+    }
+
+    // Enforce UX: no questions, and shape output for the single-step UI.
     if (data && typeof data === 'object') {
       data.clarifyingQuestion = null;
-      const effectiveMode = (mode || '').toLowerCase();
-      const effectiveReason = typeof reason === 'string' ? reason.toLowerCase() : '';
-      if (effectiveMode === 'step') {
-        const wantsNextStep = effectiveReason.includes('progress');
-        if (!wantsNextStep) {
-          data.steps = [];
-        } else if (Array.isArray(data.steps)) {
-          data.steps = data.steps.slice(0, 1);
-        } else {
-          data.steps = [];
+      if (Array.isArray(data.steps)) data.steps = data.steps.slice(0, 1);
+
+      // Single-step UI always points at the only step.
+      data.currentStepIndex = 0;
+
+      // If the model put the real guidance into currentStepHelp, migrate it into the step details.
+      if (Array.isArray(data.steps) && data.steps.length === 1) {
+        const step0 = data.steps[0] && typeof data.steps[0] === 'object' ? data.steps[0] : {};
+        const help = typeof data.currentStepHelp === 'string' ? data.currentStepHelp.trim() : '';
+        const details = typeof step0.details === 'string' ? step0.details.trim() : '';
+
+        if (!details && help) {
+          step0.details = help;
+          data.steps[0] = step0;
+          data.currentStepHelp = '';
         }
       }
 
-      // Keep output bounded.
-      if (Array.isArray(data.steps) && data.steps.length > 1) data.steps = data.steps.slice(0, 1);
+      // If details exceed the hard limit, ask the model to rewrite (do not truncate locally).
+      if (Array.isArray(data.steps) && data.steps.length === 1) {
+        const step0 = data.steps[0] && typeof data.steps[0] === 'object' ? data.steps[0] : {};
+        const details = typeof step0.details === 'string' ? step0.details.trim() : '';
+        if (details && details.length > 400) {
+          try {
+            const extra = [
+              'STRICT FORMAT FIX:',
+              '- Your previous JSON violated the details length limit.',
+              '- Rewrite the JSON so that steps[0].details is <= 400 characters (hard limit).',
+              '- Keep steps array length = 1 and currentStepIndex = 0.',
+              '- Keep actionId/actionLabel the same if possible; do not invent new UI.',
+              '- Return valid JSON only.',
+              'Previous JSON:',
+              JSON.stringify(data)
+            ].join('\n');
+
+            const retry = await callModel({ withImage: hasScreenshot, extraInstruction: extra });
+            const retryText = retry.output_text?.trim() || '';
+            const rewritten = JSON.parse(retryText);
+            if (rewritten && typeof rewritten === 'object') data = rewritten;
+          } catch {
+            // best-effort; keep original (client may still display it)
+          }
+        }
+      }
+
+      // Keep summary compact (the UI shows details inside the step).
+      if (typeof data.summary === 'string' && data.summary.length > 180) {
+        data.summary = data.summary.slice(0, 180);
+      }
+
+      // Keep help minimal if present.
+      if (typeof data.currentStepHelp === 'string' && data.currentStepHelp.length > 140) {
+        data.currentStepHelp = data.currentStepHelp.slice(0, 140);
+      }
+    }
+
+    // Persist the returned step into memory (KG/VDB) so future retrieval can use it.
+    try {
+      const memoryStore = await memoryStorePromise;
+      const returnedStep = Array.isArray(data?.steps) && data.steps.length ? data.steps[0] : null;
+      const docs = buildMemoryDocuments({
+        goal: workflowState.goal,
+        url: workflowState.url,
+        uiActions: contextForModel.uiActions,
+        previousStep,
+        returnedStep
+      });
+      await memoryStore.upsertDocuments({
+        client,
+        embeddingModel: OPENAI_EMBEDDING_MODEL,
+        documents: docs
+      });
+      await memoryStore.save();
+    } catch {
+      // best-effort
     }
 
     return res.json(data);
