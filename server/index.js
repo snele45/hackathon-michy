@@ -33,6 +33,21 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
+function computeSessionKey({ session, url }) {
+  const pageKey = typeof session?.pageKey === 'string' ? session.pageKey.slice(0, 220) : null;
+  const sessionId = Number.isFinite(session?.id) ? session.id : null;
+  const startedAt = Number.isFinite(session?.startedAt) ? session.startedAt : null;
+
+  let host = null;
+  try {
+    if (typeof url === 'string' && url) host = new URL(url).host;
+  } catch {
+    host = null;
+  }
+
+  return `${pageKey || host || 'unknown'}|${sessionId ?? ''}|${startedAt ?? ''}`;
+}
+
 app.post('/api/explain', async (req, res) => {
   try {
     if (!client) {
@@ -49,7 +64,8 @@ app.post('/api/explain', async (req, res) => {
       currentStepIndex,
       mode,
       steps,
-      reason
+      reason,
+      session
     } = req.body || {};
 
     if (!goal || typeof goal !== 'string') {
@@ -328,8 +344,11 @@ app.post('/api/explain', async (req, res) => {
       mode: typeof mode === 'string' ? mode : 'auto',
       reason: typeof reason === 'string' ? reason : '',
       url: contextForModel.url || null,
-      title: contextForModel.title || null
+      title: contextForModel.title || null,
+      session: session && typeof session === 'object' ? session : null
     };
+
+    const sessionKey = computeSessionKey({ session, url: workflowState.url });
 
     const safeHistory = Array.isArray(history) ? history.slice(-10) : [];
     const safePlanSteps = Array.isArray(steps)
@@ -363,7 +382,8 @@ app.post('/api/explain', async (req, res) => {
         url: workflowState.url,
         uiActions: contextForModel.uiActions,
         previousStep,
-        returnedStep: null
+        returnedStep: null,
+        sessionKey
       });
 
       // Store a small slice of semantic extraction results.
@@ -387,6 +407,7 @@ app.post('/api/explain', async (req, res) => {
         embeddingModel: OPENAI_EMBEDDING_MODEL,
         queryText,
         hostHint: null,
+        sessionKey,
         topK: 6
       });
 
@@ -414,7 +435,7 @@ app.post('/api/explain', async (req, res) => {
       '- If the goal is about email/inbox/unread and Context.navItems includes "Mailbox", choose "Mailbox" as the next click.',
       '- If the goal mentions a specific repository/project name and Context.navLinkCandidates includes a link with that exact label (or very close), choose that as the next click (do NOT suggest profile editing).',
       '- If on GitHub and the goal is about branches: first navigate to the repository page, then guide to its Branches view (often visible as a "Branches" link or by URL ending with "/branches").',
-      '- If Context.recentEvents show recent clicks, use that to infer progress and suggest what to do next.',
+      '- If Context.recentEvents show recent interactions (click/change), use that to infer progress and suggest what to do next.',
       '- Output MUST be valid JSON only (no markdown, no prose outside JSON).',
       '',
       'Return JSON schema:',
@@ -620,7 +641,8 @@ app.post('/api/explain', async (req, res) => {
         url: workflowState.url,
         uiActions: contextForModel.uiActions,
         previousStep,
-        returnedStep
+        returnedStep,
+        sessionKey
       });
       await memoryStore.upsertDocuments({
         client,
@@ -636,6 +658,33 @@ app.post('/api/explain', async (req, res) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/session/end', async (req, res) => {
+  try {
+    const { session, url } = req.body || {};
+    const sessionKey = computeSessionKey({ session, url });
+    const memoryStore = await memoryStorePromise;
+    const result = memoryStore.clearVectorForSession(sessionKey);
+    await memoryStore.save();
+    return res.json({ ok: true, ...result });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e?.message || 'session end failed' });
+  }
+});
+
+// Backwards-compatible alias (no longer wipes graph).
+app.post('/api/reset', async (req, res) => {
+  try {
+    const { session, url } = req.body || {};
+    const sessionKey = computeSessionKey({ session, url });
+    const memoryStore = await memoryStorePromise;
+    const result = memoryStore.clearVectorForSession(sessionKey);
+    await memoryStore.save();
+    return res.json({ ok: true, ...result });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e?.message || 'reset failed' });
   }
 });
 

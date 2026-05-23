@@ -227,7 +227,7 @@ export class MemoryStore {
     return { inserted };
   }
 
-  async querySimilar({ client, embeddingModel, queryText, hostHint, topK = 6 }) {
+  async querySimilar({ client, embeddingModel, queryText, hostHint, sessionKey, topK = 6 }) {
     const q = (queryText || '').toString().trim();
     if (!q) return [];
 
@@ -248,6 +248,8 @@ export class MemoryStore {
       const d = docs[id];
       if (!d?.embedding) continue;
       if (hostHint && d.host && d.host !== hostHint) continue;
+      if (sessionKey && d?.meta?.sessionKey && d.meta.sessionKey !== sessionKey) continue;
+      if (sessionKey && !d?.meta?.sessionKey) continue;
       const score = dot(qv, d.embedding);
       scored.push({ id, score, text: d.text, meta: d.meta || null });
     }
@@ -260,12 +262,32 @@ export class MemoryStore {
       meta: x.meta
     }));
   }
+
+  clearVectorForSession(sessionKey) {
+    const key = (sessionKey || '').toString().trim();
+    if (!key) return { removed: 0 };
+
+    const docs = this.data.vector?.docs || {};
+    let removed = 0;
+    for (const id of Object.keys(docs)) {
+      const d = docs[id];
+      if (d?.meta?.sessionKey === key) {
+        delete docs[id];
+        removed += 1;
+      }
+    }
+
+    const order = Array.isArray(this.data.vector?.order) ? this.data.vector.order : [];
+    this.data.vector.order = order.filter((id) => Boolean(docs[id]));
+    return { removed };
+  }
 }
 
-export function buildMemoryDocuments({ goal, url, uiActions, previousStep, returnedStep }) {
+export function buildMemoryDocuments({ goal, url, uiActions, previousStep, returnedStep, sessionKey }) {
   const docs = [];
   const urlNorm = normalizeUrl(url);
   const host = pickHost(urlNorm);
+  const sk = typeof sessionKey === 'string' && sessionKey.trim() ? sessionKey.trim().slice(0, 260) : null;
 
   const goalText = typeof goal === 'string' ? goal.slice(0, 200) : '';
 
@@ -275,7 +297,7 @@ export function buildMemoryDocuments({ goal, url, uiActions, previousStep, retur
     const label = typeof a?.label === 'string' ? a.label.slice(0, 120) : null;
     if (!actionId || !label) continue;
 
-    const id = `action:${host || 'unknown'}:${actionId}`;
+    const id = `action:${sk || host || 'unknown'}:${actionId}`;
     const text = [
       `Goal: ${goalText}`,
       `URL: ${urlNorm || ''}`,
@@ -291,6 +313,7 @@ export function buildMemoryDocuments({ goal, url, uiActions, previousStep, retur
         type: 'uiAction',
         url: urlNorm,
         host,
+        sessionKey: sk,
         actionId,
         actionLabel: label,
         semanticType: a?.semanticType || null,
@@ -309,7 +332,7 @@ export function buildMemoryDocuments({ goal, url, uiActions, previousStep, retur
     const step = sp.step || {};
     const label = typeof step?.actionLabel === 'string' ? step.actionLabel.slice(0, 120) : '';
     const actionId = typeof step?.actionId === 'string' ? step.actionId.slice(0, 40) : '';
-    const id = `step:${host || 'unknown'}:${sp.kind}:${actionId || label || nowIso()}`;
+    const id = `step:${sk || host || 'unknown'}:${sp.kind}:${actionId || label || nowIso()}`;
 
     const text = [
       `Goal: ${goalText}`,
@@ -328,6 +351,7 @@ export function buildMemoryDocuments({ goal, url, uiActions, previousStep, retur
         type: sp.kind,
         url: urlNorm,
         host,
+        sessionKey: sk,
         actionId: actionId || null,
         actionLabel: label || null,
         title: typeof step?.title === 'string' ? step.title.slice(0, 120) : null
