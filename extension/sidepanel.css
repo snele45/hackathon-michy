@@ -1,0 +1,133 @@
+:root {
+  --ui-bg: #0b0d10;
+  --ui-fg: #e8eef6;
+  --ui-muted: rgba(232, 238, 246, 0.7);
+  --ui-card: rgba(255, 255, 255, 0.06);
+  --ui-border: rgba(255, 255, 255, 0.12);
+  --ui-accent: #4ea1ff;
+  --ui-font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 12px;
+  font-family: var(--ui-font);
+  color: var(--ui-fg);
+  background: var(--ui-bg);
+}
+
+.header {
+  padding: 8px 10px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-card);
+  border-radius: 10px;
+  margin-bottom: 10px;
+}
+
+.title { font-weight: 700; font-size: 14px; }
+.subtitle { font-size: 12px; color: var(--ui-muted); margin-top: 2px; }
+
+.card {
+  border: 1px solid var(--ui-border);
+  background: var(--ui-card);
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.label {
+  display: block;
+  font-size: 12px;
+  color: var(--ui-muted);
+  margin: 8px 0 6px;
+}
+
+.input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ui-border);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--ui-fg);
+  outline: none;
+}
+
+.input:focus {
+  border-color: rgba(78, 161, 255, 0.7);
+}
+
+.btn {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ui-border);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--ui-fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn.primary {
+  border-color: rgba(78, 161, 255, 0.6);
+  background: rgba(78, 161, 255, 0.16);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.hint, .small {
+  font-size: 12px;
+  color: var(--ui-muted);
+  margin-top: 6px;
+}
+
+.context {
+  margin: 8px 0 0;
+  max-height: 110px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--ui-border);
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+.summary, .question, .help {
+  font-size: 13px;
+  line-height: 1.35;
+  margin-top: 6px;
+}
+
+.stepsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.steps {
+  margin: 8px 0 0 18px;
+  padding: 0;
+}
+
+.steps li {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.15);
+}
+
+.steps li.active {
+  border-color: rgba(78, 161, 255, 0.7);
+}

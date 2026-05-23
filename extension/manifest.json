@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Onboarding Buddy",
+  "version": "0.1.0",
+  "description": "Side-panel buddy that explains what to do step-by-step based on the current page.",
+  "permissions": ["sidePanel", "activeTab", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "Onboarding Buddy"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["contentScript.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

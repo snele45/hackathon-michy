@@ -1,0 +1,10 @@
+{
+  "name": "onboarding-buddy",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "server:install": "npm --prefix server install",
+    "server:dev": "npm --prefix server run dev",
+    "server:start": "npm --prefix server run start"
+  }
+}
