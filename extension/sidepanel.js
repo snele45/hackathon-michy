@@ -49,6 +49,7 @@ function render() {
           headings: ctx.headings,
           navItems: ctx.navItems,
           navLinkCandidates: ctx.navLinkCandidates,
+          interactiveContainers: ctx.interactiveContainers,
           navigationGroups: ctx.navigationGroups,
           primaryActions: ctx.primaryActions,
           primaryFields: ctx.primaryFields,
@@ -233,6 +234,41 @@ function setStatus(text) {
   el('statusLine').textContent = text || '';
 }
 
+function sanitizeStep(s) {
+  if (!s || typeof s !== 'object') return null;
+  const title = typeof s.title === 'string' ? s.title.trim() : '';
+  const details = typeof s.details === 'string' ? s.details.trim() : '';
+  const actionLabel = typeof s.actionLabel === 'string' ? s.actionLabel.trim() : '';
+  if (!title && !details && !actionLabel) return null;
+  return {
+    title: title || 'Next step',
+    details,
+    ...(actionLabel ? { actionLabel } : {})
+  };
+}
+
+function appendNextStepFromResponse(data, { source }) {
+  if (!data || typeof data !== 'object') return false;
+  if (!Array.isArray(data.steps) || data.steps.length === 0) return false;
+
+  const candidate = sanitizeStep(data.steps[0]);
+  if (!candidate) return false;
+
+  const last = state.steps[state.steps.length - 1];
+  if (last) {
+    const sameAction = isSameLabel(last.actionLabel || '', candidate.actionLabel || '');
+    const sameTitle = (normalizeLabel(last.title || '').toLowerCase() || '') ===
+      (normalizeLabel(candidate.title || '').toLowerCase() || '');
+    if (sameAction && (candidate.actionLabel || '') && (last.actionLabel || '')) return false;
+    if (sameTitle && !(candidate.actionLabel || '')) return false;
+  }
+
+  state.steps.push(candidate);
+  state.currentStepIndex = Math.max(0, state.steps.length - 1);
+  tracePush({ type: 'step_appended', source: source || 'unknown', stepsCount: state.steps.length });
+  return true;
+}
+
 function findActionCandidate(label) {
   const ctx = state.context;
   if (!ctx) return null;
@@ -379,10 +415,17 @@ async function explainNextStep() {
   if (typeof data.summary === 'string') el('summary').textContent = data.summary;
   if (data.clarifyingQuestion) el('clarifying').textContent = `Question: ${data.clarifyingQuestion}`;
 
-  // Only set/replace the plan when we're in "plan" mode.
-  if (isPlan && Array.isArray(data.steps) && data.steps.length > 0) {
-    state.steps = data.steps;
-    tracePush({ type: 'steps_set', stepsCount: state.steps.length });
+  // New behavior: build steps incrementally.
+  // - First request (plan mode): take the single returned step as step[0]
+  // - Later (step mode): append next step only when server returns it
+  if (Array.isArray(data.steps) && data.steps.length > 0) {
+    if (isPlan) {
+      state.steps = [];
+      appendNextStepFromResponse(data, { source: 'plan' });
+      tracePush({ type: 'steps_initialized_incremental', stepsCount: state.steps.length });
+    } else {
+      appendNextStepFromResponse(data, { source: 'explain_step' });
+    }
   }
 
   if (Number.isFinite(data.currentStepIndex)) {
@@ -436,9 +479,13 @@ async function refreshCurrentStepHelp({ reason }) {
     if (!resp.ok) return;
     const data = await resp.json();
 
-    // Keep steps stable; only update help + optional step index.
+    // Incremental mode:
+    // - On progress, server may return exactly 1 next step; append it.
+    // - Otherwise keep steps stable and only refresh help.
     if (typeof data.summary === 'string') el('summary').textContent = data.summary;
     if (typeof data.currentStepHelp === 'string') el('currentHelp').textContent = data.currentStepHelp;
+
+    appendNextStepFromResponse(data, { source: `refresh:${reason || 'unknown'}` });
 
     if (Number.isFinite(data.currentStepIndex)) {
       state.currentStepIndex = Math.max(0, Math.min(data.currentStepIndex, Math.max(0, state.steps.length - 1)));
@@ -547,21 +594,9 @@ async function handlePageEvent(event) {
   const currentStep = state.steps[state.currentStepIndex];
   const expected = typeof currentStep?.actionLabel === 'string' ? currentStep.actionLabel.trim() : '';
   const matchedExpected = isSameLabel(clickedLabel, expected);
-  const wasLastStep = state.steps.length > 0 && state.currentStepIndex === state.steps.length - 1;
   if (matchedExpected) {
     state.history.push({ at: Date.now(), type: 'click', label: clickedLabel, matchedStep: state.currentStepIndex });
     tracePush({ type: 'step_matched_by_click', stepIndex: state.currentStepIndex, actionLabel: expected });
-
-    if (wasLastStep) {
-      state.walkthroughCompleted = true;
-      state.autoRefreshEnabled = false;
-      tracePush({ type: 'walkthrough_completed', stepsCount: state.steps.length });
-      setStatus('All steps completed successfully.');
-      render();
-      return;
-    }
-
-    state.currentStepIndex = Math.min(state.currentStepIndex + 1, Math.max(0, state.steps.length - 1));
   } else {
     state.history.push({ at: Date.now(), type: 'click', label: clickedLabel || null });
     tracePush({ type: 'click_no_step_match', expectedActionLabel: expected || null });
@@ -572,25 +607,13 @@ async function handlePageEvent(event) {
   await refreshCurrentStepHelp({ reason: matchedExpected ? 'progress' : 'click' });
 }
 
-function markDone() {
+async function markDone() {
   if (state.steps.length === 0) return;
-
   if (state.walkthroughCompleted) return;
 
-  const isLast = state.currentStepIndex >= state.steps.length - 1;
-  if (isLast) {
-    state.walkthroughCompleted = true;
-    state.autoRefreshEnabled = false;
-    tracePush({ type: 'walkthrough_completed_manual', stepsCount: state.steps.length });
-    setStatus('All steps completed successfully.');
-    render();
-    return;
-  }
-
-  const prev = state.currentStepIndex;
-  state.currentStepIndex = Math.min(state.currentStepIndex + 1, state.steps.length - 1);
-  tracePush({ type: 'step_completed_manual', from: prev, to: state.currentStepIndex });
-  render();
+  tracePush({ type: 'step_completed_manual', stepIndex: state.currentStepIndex });
+  setStatus('');
+  await refreshCurrentStepHelp({ reason: 'progress_manual' });
 }
 
 el('goal').addEventListener('input', () => {

@@ -39,12 +39,53 @@ app.post('/api/explain', async (req, res) => {
       history,
       currentStepIndex,
       mode,
-      steps
+      steps,
+      reason
     } = req.body || {};
 
     if (!goal || typeof goal !== 'string') {
       return res.status(400).json({ error: 'Missing `goal` (string).' });
     }
+
+    function tokenizeGoal(g) {
+      const raw = (g || '').toLowerCase();
+      const tokens = raw
+        .split(/[^a-z0-9_\-./]+/g)
+        .map((t) => t.trim())
+        .filter(Boolean)
+        .filter((t) => t.length >= 3);
+      return [...new Set(tokens)].slice(0, 18);
+    }
+
+    function isImportantNavLabel(label) {
+      const t = (label || '').toLowerCase();
+      return [
+        'repositories',
+        'repo',
+        'branches',
+        'branch',
+        'code',
+        'projects',
+        'packages',
+        'stars',
+        'overview',
+        'pull requests',
+        'issues',
+        'actions',
+        'insights',
+        'settings'
+      ].some((k) => t.includes(k));
+    }
+
+    function matchesGoal(text, goalTokens) {
+      const t = (text || '').toLowerCase();
+      if (!t) return false;
+      return goalTokens.some((k) => t.includes(k));
+    }
+
+    const goalTokens = tokenizeGoal(goal);
+    const isGitHub = typeof context?.url === 'string' && context.url.includes('github.com');
+    const wantsBranches = /\bbranch(es)?\b/i.test(goal);
 
     const safeContext = {
       url: context?.url || null,
@@ -54,7 +95,7 @@ app.post('/api/explain', async (req, res) => {
       primaryActions: Array.isArray(context?.primaryActions) ? context.primaryActions.slice(0, 20) : [],
       navItems: Array.isArray(context?.navItems) ? context.navItems.slice(0, 25) : [],
       navLinkCandidates: Array.isArray(context?.navLinkCandidates)
-        ? context.navLinkCandidates.slice(0, 35).map((x) => ({
+        ? context.navLinkCandidates.slice(0, 60).map((x) => ({
             label: typeof x?.label === 'string' ? x.label.slice(0, 80) : null,
             to: typeof x?.to === 'string' ? x.to.slice(0, 180) : null,
             area: x?.area || null,
@@ -67,6 +108,33 @@ app.post('/api/explain', async (req, res) => {
             kind: e?.kind || null,
             from: typeof e?.from === 'string' ? e.from.slice(0, 180) : null,
             to: typeof e?.to === 'string' ? e.to.slice(0, 180) : null
+          }))
+        : [],
+
+      interactiveContainers: Array.isArray(context?.interactiveContainers)
+        ? context.interactiveContainers.slice(0, 40).map((c) => ({
+            tag: c?.tag || null,
+            id: typeof c?.id === 'string' ? c.id.slice(0, 60) : null,
+            class: typeof c?.class === 'string' ? c.class.slice(0, 140) : null,
+            role: c?.role || null,
+            testid: typeof c?.testid === 'string' ? c.testid.slice(0, 80) : null,
+            label: typeof c?.label === 'string' ? c.label.slice(0, 80) : null,
+            value: typeof c?.value === 'string' ? c.value.slice(0, 80) : null,
+            dataSubpanelId: typeof c?.dataSubpanelId === 'string' ? c.dataSubpanelId.slice(0, 80) : null,
+            area: c?.area || null,
+            controls: Array.isArray(c?.controls)
+              ? c.controls.slice(0, 12).map((x) => ({
+                  kind: x?.kind || null,
+                  tag: x?.tag || null,
+                  role: x?.role || null,
+                  label: typeof x?.label === 'string' ? x.label.slice(0, 80) : null,
+                  id: typeof x?.id === 'string' ? x.id.slice(0, 60) : null,
+                  name: typeof x?.name === 'string' ? x.name.slice(0, 60) : null,
+                  type: x?.type || null,
+                  testid: typeof x?.testid === 'string' ? x.testid.slice(0, 80) : null,
+                  ariaLabel: typeof x?.ariaLabel === 'string' ? x.ariaLabel.slice(0, 80) : null
+                }))
+              : []
           }))
         : [],
       navigationGroups: Array.isArray(context?.navigationGroups)
@@ -123,6 +191,54 @@ app.post('/api/explain', async (req, res) => {
       themeHint: context?.themeHint || null
     };
 
+    // Focus the context to reduce noise: keep goal-matching items plus key navigation affordances.
+    const focused = { ...safeContext };
+
+    focused.navItems = (safeContext.navItems || [])
+      .filter((x) => matchesGoal(x, goalTokens) || isImportantNavLabel(x))
+      .slice(0, 22);
+
+    focused.navLinkCandidates = (safeContext.navLinkCandidates || [])
+      .filter((x) => {
+        const label = x?.label || '';
+        const to = x?.to || '';
+        return (
+          matchesGoal(label, goalTokens) ||
+          matchesGoal(to, goalTokens) ||
+          isImportantNavLabel(label) ||
+          (isGitHub && wantsBranches && label.toLowerCase().includes('repositories'))
+        );
+      })
+      .slice(0, 28);
+
+    // Interactive containers can easily drown the model; keep only ones that have goal matches
+    // or are clearly navigation-like.
+    focused.interactiveContainers = (safeContext.interactiveContainers || [])
+      .filter((c) => {
+        const blob = JSON.stringify(c || {}).toLowerCase();
+        if (!blob) return false;
+        if (goalTokens.some((k) => blob.includes(k))) return true;
+        if (c?.area === 'left' || c?.area === 'top') return true;
+        return false;
+      })
+      .slice(0, 16);
+
+    // Prefer focused context when we have enough signal.
+    const contextForModel = {
+      ...focused,
+      // Keep these as-is to preserve page understanding.
+      headings: safeContext.headings,
+      navigationGroups: safeContext.navigationGroups,
+      dropdownTriggers: safeContext.dropdownTriggers,
+      openMenuGroups: safeContext.openMenuGroups,
+      recentEvents: safeContext.recentEvents,
+      navGraph: safeContext.navGraph,
+      fieldLabels: safeContext.fieldLabels,
+      primaryFields: safeContext.primaryFields,
+      fieldCandidates: safeContext.fieldCandidates,
+      themeHint: safeContext.themeHint
+    };
+
     const safeHistory = Array.isArray(history) ? history.slice(-10) : [];
     const safePlanSteps = Array.isArray(steps)
       ? steps.slice(0, 18).map((s) => ({
@@ -145,6 +261,8 @@ app.post('/api/explain', async (req, res) => {
       '- If Context.openMenuGroups includes visible items (dropdown/menu options), prefer selecting an actionLabel from those items when guiding through submenus.',
       '- Prefer selecting navigation/sidebar items from Context.navItems / Context.navigationGroups for section changes (this is usually the start of a walkthrough).',
       '- If the goal is about email/inbox/unread and Context.navItems includes "Mailbox", choose "Mailbox" as the next click.',
+      '- If the goal mentions a specific repository/project name and Context.navLinkCandidates includes a link with that exact label (or very close), choose that as the next click (do NOT suggest profile editing).',
+      '- If on GitHub and the goal is about branches: first navigate to the repository page, then guide to its Branches view (often visible as a "Branches" link or by URL ending with "/branches").',
       '- If Context.recentEvents show recent clicks, use that to infer progress and suggest what to do next.',
       '- Output MUST be valid JSON only (no markdown, no prose outside JSON).',
       '',
@@ -159,10 +277,13 @@ app.post('/api/explain', async (req, res) => {
       '',
       `Mode: ${mode || 'auto'}`,
       `CurrentStepIndex: ${Number.isFinite(currentStepIndex) ? currentStepIndex : 0}`,
+      `Reason: ${typeof reason === 'string' ? reason : ''}`,
       '',
       'Mode semantics:',
-      '- If Mode is "plan": return a full ordered steps array (3-8 steps).',
-      '- If Mode is "step": DO NOT re-plan. Keep "steps" as an empty array [], and only update summary/currentStepHelp/currentStepIndex.',
+      '- If Mode is "plan": return exactly 1 next step (the immediate action to take now).',
+      '- If Mode is "step": DO NOT re-plan.',
+      '  - If Reason includes "progress": return exactly 1 next step in "steps" (the next action to take now).',
+      '  - Otherwise (Reason not progress): keep "steps" as an empty array [] and only update summary/currentStepHelp/currentStepIndex.',
       '- In "step" mode you MUST assess whether the last user interaction moved toward the goal (relevance check) using Context.url/title/headings/recentEvents/navGraph.',
       '  - If it seems relevant progress: say so briefly in summary and give the next concrete action.',
       '  - If it seems NOT relevant: say why, and suggest a correction (which nav item/menu to use).',
@@ -174,12 +295,13 @@ app.post('/api/explain', async (req, res) => {
       '- Prefer visible text. If an element is icon-only with no visible label, using its aria-label or title is acceptable as a fallback.',
       '- If you cannot confidently provide an exact actionLabel from context, omit actionLabel and instead describe WHERE it is (left sidebar/top bar/right panel/main area) using Context.navigationGroups[*].area and the surrounding labels.',
       '- Use Context.navLinkCandidates (label -> destination) and Context.navGraph (observed clicks -> URL) to disambiguate navigation. When helpful, mention the destination path in details, but keep actionLabel as the visible label.',
+      '- If the UI uses div-based controls (no <button>), use Context.interactiveContainers[*].controls to pick the best visible label/ariaLabel/testid and describe where it is (area + nearby labels).',
       '',
       'Current plan steps (may be empty):',
       JSON.stringify(safePlanSteps),
       '',
       'Context JSON:',
-      JSON.stringify(safeContext),
+      JSON.stringify(contextForModel),
       '',
       'History (most recent last):',
       JSON.stringify(safeHistory)
@@ -206,11 +328,24 @@ app.post('/api/explain', async (req, res) => {
       });
     }
 
-    // Enforce UX: no questions, and keep plan stable in step mode.
+    // Enforce UX: no questions, and keep step mode incremental.
     if (data && typeof data === 'object') {
       data.clarifyingQuestion = null;
       const effectiveMode = (mode || '').toLowerCase();
-      if (effectiveMode === 'step') data.steps = [];
+      const effectiveReason = typeof reason === 'string' ? reason.toLowerCase() : '';
+      if (effectiveMode === 'step') {
+        const wantsNextStep = effectiveReason.includes('progress');
+        if (!wantsNextStep) {
+          data.steps = [];
+        } else if (Array.isArray(data.steps)) {
+          data.steps = data.steps.slice(0, 1);
+        } else {
+          data.steps = [];
+        }
+      }
+
+      // Keep output bounded.
+      if (Array.isArray(data.steps) && data.steps.length > 1) data.steps = data.steps.slice(0, 1);
     }
 
     return res.json(data);

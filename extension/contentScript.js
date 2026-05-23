@@ -44,6 +44,185 @@ function areaHintForElement(el) {
   }
 }
 
+function compactTokens(str, max = 4) {
+  const t = (str || '').trim();
+  if (!t) return [];
+  return t
+    .split(/\s+/g)
+    .filter(Boolean)
+    .slice(0, max);
+}
+
+function getAttr(el, name) {
+  try {
+    return (el.getAttribute(name) || '').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function pickInterestingAttrs(el) {
+  if (!el) return {};
+  const attrs = {
+    id: getAttr(el, 'id'),
+    role: getAttr(el, 'role'),
+    name: getAttr(el, 'name'),
+    type: getAttr(el, 'type'),
+    ariaLabel: getAttr(el, 'aria-label'),
+    ariaHaspopup: getAttr(el, 'aria-haspopup'),
+    ariaExpanded: getAttr(el, 'aria-expanded'),
+    testid: getAttr(el, 'data-testid'),
+    subpanelId: getAttr(el, 'data-subpanel-id'),
+    labelAttr: getAttr(el, 'label')
+  };
+
+  const className = (el.className || '').toString();
+  const classTokens = compactTokens(className, 4);
+  if (classTokens.length) attrs.classTokens = classTokens;
+
+  // Data-* keys can be very informative for component libraries.
+  try {
+    const dataKeys = [];
+    for (const a of [...el.attributes]) {
+      const n = (a?.name || '').toLowerCase();
+      if (!n.startsWith('data-')) continue;
+      if (n === 'data-testid' || n === 'data-subpanel-id') continue;
+      dataKeys.push(n);
+      if (dataKeys.length >= 6) break;
+    }
+    if (dataKeys.length) attrs.dataKeys = dataKeys;
+  } catch {
+    // ignore
+  }
+
+  // Drop nulls.
+  for (const k of Object.keys(attrs)) if (attrs[k] == null) delete attrs[k];
+  return attrs;
+}
+
+function buildDomHintPath(el) {
+  try {
+    if (!el) return '';
+    const parts = [];
+    let cur = el;
+    for (let i = 0; i < 5 && cur; i++) {
+      if (cur === document.body) break;
+      const tag = (cur.tagName || '').toLowerCase();
+      if (!tag) break;
+      const id = getAttr(cur, 'id');
+      const testid = getAttr(cur, 'data-testid');
+      const role = getAttr(cur, 'role');
+      const cls = compactTokens((cur.className || '').toString(), 2);
+      const suffix = id
+        ? `#${id}`
+        : testid
+          ? `[data-testid=${testid}]`
+          : role
+            ? `[role=${role}]`
+            : cls.length
+              ? `.${cls.join('.')}`
+              : '';
+      parts.push(`${tag}${suffix}`);
+      cur = cur.parentElement;
+    }
+    return parts.join(' < ');
+  } catch {
+    return '';
+  }
+}
+
+function sanitizeHtmlSnippet(html) {
+  const raw = (html || '').toString();
+  if (!raw) return '';
+  // Collapse whitespace
+  let s = raw.replace(/\s+/g, ' ').trim();
+  // Remove huge inline styles and values to reduce token size and avoid leaking.
+  s = s.replace(/\sstyle="[^"]*"/gi, ' style="…"');
+  s = s.replace(/\svalue="[^"]*"/gi, ' value="…"');
+  // Cap overly long attribute values.
+  s = s.replace(/(\w+\s*=\s*")([^"]{80,})(")/g, (_m, a, b, c) => `${a}${b.slice(0, 77)}…${c}`);
+  // Hard cap.
+  if (s.length > 700) s = `${s.slice(0, 697)}…`;
+  return s;
+}
+
+function summarizeInteractive(el) {
+  if (!el) return null;
+  const tag = (el.tagName || '').toLowerCase();
+  const label = getVisibleActionLabel(el).replace(/\s+/g, ' ').trim();
+  const attrs = pickInterestingAttrs(el);
+  return {
+    tag,
+    label: label ? (label.length > 80 ? `${label.slice(0, 77)}…` : label) : null,
+    kind: describeElementKind(el),
+    attrs
+  };
+}
+
+function collectInteractiveContainers() {
+  // Goal: detect component-library "button-like" UIs by scraping containers that *contain* interactives.
+  // We return compact metadata + a short sanitized HTML snippet (NOT full DOM dump).
+  const interactives = [
+    ...document.querySelectorAll(
+      `${getClickableSelectors()}, input, textarea, select, [contenteditable="true"]`
+    )
+  ];
+
+  const out = [];
+  const seen = new Set();
+
+  for (const el of interactives.slice(0, 600)) {
+    if (!isElementVisible(el)) continue;
+
+    const container = el.closest(
+      'div, section, form, fieldset, li, [role="group"], [role="dialog"], [role="tabpanel"], [data-testid], [data-subpanel-id]'
+    );
+    if (!container) continue;
+    if (!isElementVisible(container)) continue;
+
+    const key = buildDomHintPath(container);
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    // Ensure the container actually has multiple relevant descendants.
+    const childInteractives = [...container.querySelectorAll(`${getClickableSelectors()}, input, textarea, select, [contenteditable="true"]`)]
+      .filter(isElementVisible)
+      .slice(0, 10);
+    if (childInteractives.length === 0) continue;
+
+    const snippet = sanitizeHtmlSnippet(container.outerHTML);
+    const sample = [];
+    for (const c of childInteractives.slice(0, 6)) {
+      const sum = summarizeInteractive(c);
+      if (sum) sample.push(sum);
+    }
+
+    // A small label hint near the container can help the model.
+    let nearbyLabel = '';
+    try {
+      const lbl = container.querySelector('label, legend, summary');
+      if (lbl && isElementVisible(lbl)) nearbyLabel = (lbl.innerText || '').replace(/\s+/g, ' ').trim();
+    } catch {
+      // ignore
+    }
+
+    out.push({
+      area: areaHintForElement(container),
+      domPath: key,
+      attrs: pickInterestingAttrs(container),
+      nearbyLabel: nearbyLabel ? nearbyLabel.slice(0, 80) : null,
+      childCount: childInteractives.length,
+      childSample: sample,
+      htmlSnippet: snippet
+    });
+
+    if (out.length >= 18) break;
+  }
+
+  return out;
+}
+
 function getVisibleActionLabel(element) {
   if (!element) return '';
 
@@ -78,6 +257,10 @@ function isNoisyActionLabel(label) {
   if (/^skip to /i.test(t)) return true;
   // Badges/counters like "3" or "15" are usually noise.
   if (/^\d{1,3}$/.test(t)) return true;
+  // Social counters / profile meta are rarely helpful for workflows.
+  if (/^\d+\s+(followers|following)$/i.test(t)) return true;
+  if (/\b(contribution|contributions)\b/i.test(t) && /\b(settings|activity|count)\b/i.test(t)) return true;
+  if (/^learn how we count contributions$/i.test(t)) return true;
   return false;
 }
 
@@ -187,6 +370,251 @@ function collectNavLinkCandidates() {
       seen.add(key);
       out.push({ label, to: dest, area, groupKey: groupKey || null });
       if (out.length >= 35) return out;
+    }
+  }
+
+  return out;
+}
+
+function getSafeAttr(el, name, maxLen = 80) {
+  try {
+    if (!el) return null;
+    const v = (el.getAttribute(name) || '').trim();
+    if (!v) return null;
+    return v.length > maxLen ? v.slice(0, maxLen) : v;
+  } catch {
+    return null;
+  }
+}
+
+function getClassSig(el, maxLen = 120) {
+  try {
+    if (!el) return null;
+    const cls = (el.className || '').toString().trim().replace(/\s+/g, ' ');
+    if (!cls) return null;
+    return cls.length > maxLen ? cls.slice(0, maxLen) : cls;
+  } catch {
+    return null;
+  }
+}
+
+function isButtonLike(el) {
+  if (!el) return false;
+  const tag = (el.tagName || '').toLowerCase();
+  if (tag === 'button') return true;
+  if (tag === 'a' && el.getAttribute('href')) return true;
+  const role = (el.getAttribute('role') || '').toLowerCase();
+  if (role === 'button' || role === 'link' || role === 'menuitem' || role === 'option') return true;
+  const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+  if (testid.includes('button')) return true;
+  const cls = (el.className || '').toString().toLowerCase();
+  if (/(^|\s)(btn|button)(\s|$)/i.test(cls) || cls.includes('button')) return true;
+  const id = (el.getAttribute('id') || '').toLowerCase();
+  if (id.includes('button') || id.startsWith('btn')) return true;
+  if (el.hasAttribute('onclick')) return true;
+  const tabindex = el.getAttribute('tabindex');
+  if (tabindex && tabindex !== '-1') return true;
+  return false;
+}
+
+function buttonishRegexHit(el) {
+  // Generic signal for div-based UI kits.
+  // Keep it simple and extensible: "btn" / "button".
+  const re = /(btn|button)/i;
+  if (!el) return null;
+  const cls = (el.className || '').toString();
+  if (cls && re.test(cls)) return 'class';
+  const id = el.getAttribute && el.getAttribute('id');
+  if (id && re.test(id)) return 'id';
+  const testid = el.getAttribute && el.getAttribute('data-testid');
+  if (testid && re.test(testid)) return 'data-testid';
+  const aria = el.getAttribute && el.getAttribute('aria-label');
+  if (aria && re.test(aria)) return 'aria-label';
+  const title = el.getAttribute && el.getAttribute('title');
+  if (title && re.test(title)) return 'title';
+  // Scan a small subset of data-* attrs (best-effort, bounded)
+  try {
+    const attrs = el.attributes;
+    if (attrs && attrs.length) {
+      for (let i = 0; i < Math.min(attrs.length, 18); i++) {
+        const a = attrs[i];
+        if (!a) continue;
+        const name = (a.name || '').toLowerCase();
+        if (!name.startsWith('data-')) continue;
+        const v = (a.value || '').toString();
+        if (v && re.test(v)) return name;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function nearestContainerFor(el) {
+  if (!el) return null;
+  // Prefer semantic containers; fall back to div.
+  return (
+    el.closest('section, article, form, nav, aside, dialog, [role="dialog"], [role="menu"], [role="listbox"], ul, ol, li, table, tbody, tr, td, fieldset, details, summary, div') ||
+    el.parentElement ||
+    null
+  );
+}
+
+function summarizeInteractiveElement(el) {
+  if (!el) return null;
+  const tag = (el.tagName || '').toLowerCase();
+  const role = getSafeAttr(el, 'role', 40);
+  const testid = getSafeAttr(el, 'data-testid', 80);
+  const aria = getSafeAttr(el, 'aria-label', 80);
+  const title = getSafeAttr(el, 'title', 80);
+
+  let kind = 'other';
+  if (tag === 'input' || tag === 'textarea' || tag === 'select' || el.getAttribute('contenteditable') === 'true') kind = 'field';
+  else if (isButtonLike(el)) kind = 'action';
+
+  const label = (getVisibleActionLabel(el) || aria || title || '').trim().replace(/\s+/g, ' ') || null;
+
+  const out = {
+    kind,
+    tag,
+    role,
+    label: label && label.length > 80 ? label.slice(0, 80) : label,
+    id: getSafeAttr(el, 'id', 60),
+    name: getSafeAttr(el, 'name', 60),
+    type: tag === 'input' ? getSafeAttr(el, 'type', 40) : null,
+    testid,
+    ariaLabel: aria,
+    title
+  };
+
+  const hit = buttonishRegexHit(el);
+  if (hit && kind !== 'field') out.buttonRegexHit = hit;
+
+  // Strip nulls.
+  for (const k of Object.keys(out)) if (out[k] == null || out[k] === '') delete out[k];
+  return out;
+}
+
+function collectInteractiveContainers() {
+  // Goal: capture "weird UI" patterns where the clickable isn't a <button>,
+  // but a div/span with data-testid/role/tabindex, and group them by container.
+  const roots = [];
+  const sidebar =
+    document.querySelector('aside') ||
+    document.querySelector('.sidebar') ||
+    document.querySelector('.main-sidebar') ||
+    document.querySelector('[class*="sidebar"]');
+  if (sidebar) roots.push(sidebar);
+  roots.push(document.body);
+
+  const seenContainers = new WeakSet();
+  const out = [];
+
+  const MAX_DIV_SCAN = 9000;
+  const MAX_CONTAINERS = 60;
+
+  for (const root of roots) {
+    if (!root) continue;
+    const nodes = [...root.querySelectorAll('button, a[href], input, textarea, select, [role="button"], [role="link"], [role="menuitem"], [role="option"], [data-testid], [aria-haspopup], [aria-expanded], [tabindex]')].slice(0, 1200);
+    for (const el of nodes) {
+      if (!isElementVisible(el)) continue;
+
+      const tag = (el.tagName || '').toLowerCase();
+      const isField = tag === 'input' || tag === 'textarea' || tag === 'select' || el.getAttribute('contenteditable') === 'true';
+      const isActionish = isButtonLike(el) || tag === 'button';
+      if (!isField && !isActionish) continue;
+
+      const container = nearestContainerFor(el);
+      if (!container || !isElementVisible(container)) continue;
+
+      if (seenContainers.has(container)) continue;
+      seenContainers.add(container);
+
+      // Pull a small set of child controls in this container.
+      const childControls = [];
+      const childNodes = [...container.querySelectorAll('button, a[href], input, textarea, select, [role="button"], [role="link"], [role="menuitem"], [role="option"], [data-testid], [tabindex]')].slice(0, 60);
+      for (const child of childNodes) {
+        if (!isElementVisible(child)) continue;
+        const ctag = (child.tagName || '').toLowerCase();
+        const cIsField = ctag === 'input' || ctag === 'textarea' || ctag === 'select' || child.getAttribute('contenteditable') === 'true';
+        const cIsActionish = isButtonLike(child) || ctag === 'button';
+        if (!cIsField && !cIsActionish) continue;
+        const s = summarizeInteractiveElement(child);
+        if (s) childControls.push(s);
+        if (childControls.length >= 12) break;
+      }
+
+      // Only keep containers that actually look useful.
+      if (childControls.length < 2) continue;
+
+      const item = {
+        tag: (container.tagName || '').toLowerCase(),
+        id: getSafeAttr(container, 'id', 60),
+        class: getClassSig(container, 140),
+        role: getSafeAttr(container, 'role', 40),
+        testid: getSafeAttr(container, 'data-testid', 80),
+        label: getSafeAttr(container, 'label', 80),
+        value: getSafeAttr(container, 'value', 80),
+        dataSubpanelId: getSafeAttr(container, 'data-subpanel-id', 80),
+        area: areaHintForElement(container),
+        controls: childControls
+      };
+
+      for (const k of Object.keys(item)) if (item[k] == null || item[k] === '') delete item[k];
+      out.push(item);
+      if (out.length >= MAX_CONTAINERS) return out;
+    }
+
+    // Pass 2: scan ALL divs and pick the ones that look button-ish by regex.
+    // This catches UI kits that use plain divs for controls.
+    try {
+      const divs = root.getElementsByTagName ? root.getElementsByTagName('div') : [];
+      const limit = Math.min(divs.length || 0, MAX_DIV_SCAN);
+      for (let i = 0; i < limit; i++) {
+        const d = divs[i];
+        if (!d || !isElementVisible(d)) continue;
+        const hit = buttonishRegexHit(d);
+        if (!hit && !isButtonLike(d)) continue;
+
+        const container = nearestContainerFor(d);
+        if (!container || !isElementVisible(container)) continue;
+        if (seenContainers.has(container)) continue;
+        seenContainers.add(container);
+
+        const childControls = [];
+        const childNodes = [...container.querySelectorAll('button, a[href], input, textarea, select, [role="button"], [role="link"], [role="menuitem"], [role="option"], [data-testid], [tabindex], div')].slice(0, 80);
+        for (const child of childNodes) {
+          if (!isElementVisible(child)) continue;
+          const ctag = (child.tagName || '').toLowerCase();
+          const cIsField = ctag === 'input' || ctag === 'textarea' || ctag === 'select' || child.getAttribute('contenteditable') === 'true';
+          const cIsActionish = isButtonLike(child) || buttonishRegexHit(child);
+          if (!cIsField && !cIsActionish) continue;
+          const s = summarizeInteractiveElement(child);
+          if (s) childControls.push(s);
+          if (childControls.length >= 12) break;
+        }
+
+        if (childControls.length < 2) continue;
+
+        const item = {
+          tag: (container.tagName || '').toLowerCase(),
+          id: getSafeAttr(container, 'id', 60),
+          class: getClassSig(container, 140),
+          role: getSafeAttr(container, 'role', 40),
+          testid: getSafeAttr(container, 'data-testid', 80),
+          label: getSafeAttr(container, 'label', 80),
+          value: getSafeAttr(container, 'value', 80),
+          dataSubpanelId: getSafeAttr(container, 'data-subpanel-id', 80),
+          area: areaHintForElement(container),
+          controls: childControls
+        };
+        for (const k of Object.keys(item)) if (item[k] == null || item[k] === '') delete item[k];
+        out.push(item);
+        if (out.length >= MAX_CONTAINERS) return out;
+      }
+    } catch {
+      // ignore
     }
   }
 
@@ -909,6 +1337,7 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
       const navigationGroups = collectNavigationGroups();
       const navItems = collectNavItems(navigationGroups);
       const navLinkCandidates = collectNavLinkCandidates();
+      const interactiveContainers = collectInteractiveContainers();
 
       // Prefer nav items first for primaryActions (walkthrough oriented).
       const otherActions = actionCandidates.map((a) => a.label).filter(Boolean);
@@ -922,6 +1351,7 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
         actionCandidates,
         navItems,
         navLinkCandidates,
+        interactiveContainers,
         navigationGroups,
         primaryActions: dedupedPrimaryActions,
         fieldLabels: collectFieldLabels(),
