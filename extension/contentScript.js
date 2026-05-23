@@ -121,6 +121,66 @@ function collectFieldLabels() {
   return [...new Set(labels)].slice(0, 20);
 }
 
+function findClickableAncestor(node) {
+  if (!node) return null;
+  const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  if (!el) return null;
+  return el.closest('button, [role="button"], input[type="button"], input[type="submit"], a');
+}
+
+let __obClickSeq = 0;
+function emitPageEvent(event) {
+  try {
+    chrome.runtime.sendMessage({ type: 'PAGE_EVENT', event });
+  } catch {
+    // ignore
+  }
+}
+
+// Track actionable clicks to allow the sidepanel to re-capture context and offer updated steps.
+document.addEventListener(
+  'click',
+  (e) => {
+    const targetEl = findClickableAncestor(e.target);
+    if (!targetEl) return;
+    if (!isElementVisible(targetEl)) return;
+
+    const label = getVisibleActionLabel(targetEl).trim().replace(/\s+/g, ' ') || null;
+    const kind = describeElementKind(targetEl);
+    const urlBefore = location.href;
+    const seq = ++__obClickSeq;
+    const at = Date.now();
+
+    emitPageEvent({
+      kind,
+      label,
+      urlBefore,
+      urlAfter: null,
+      at,
+      seq
+    });
+
+    setTimeout(() => {
+      try {
+        const urlAfter = location.href;
+        if (urlAfter !== urlBefore) {
+          emitPageEvent({
+            kind,
+            label,
+            urlBefore,
+            urlAfter,
+            at: Date.now(),
+            seq
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }, 450);
+  },
+  true
+);
+
 function findBestActionElementByLabel(label) {
   const target = (label || '').trim().replace(/\s+/g, ' ');
   if (!target) return null;
@@ -171,18 +231,24 @@ function highlightElement(element) {
   const prev = {
     outline: element.style.outline,
     outlineOffset: element.style.outlineOffset,
-    transition: element.style.transition
+    transition: element.style.transition,
+    backgroundColor: element.style.backgroundColor,
+    boxShadow: element.style.boxShadow
   };
 
-  element.style.transition = 'outline 120ms ease-in-out';
-  element.style.outline = '3px solid rgba(37, 99, 235, 0.95)';
-  element.style.outlineOffset = '3px';
+  element.style.transition = 'outline 120ms ease-in-out, box-shadow 120ms ease-in-out, background-color 120ms ease-in-out';
+  element.style.outline = '4px solid rgba(37, 99, 235, 0.98)';
+  element.style.outlineOffset = '6px';
+  element.style.backgroundColor = 'rgba(37, 99, 235, 0.10)';
+  element.style.boxShadow = '0 0 0 6px rgba(37, 99, 235, 0.12)';
 
   setTimeout(() => {
     element.style.outline = prev.outline;
     element.style.outlineOffset = prev.outlineOffset;
     element.style.transition = prev.transition;
-  }, 1800);
+    element.style.backgroundColor = prev.backgroundColor;
+    element.style.boxShadow = prev.boxShadow;
+  }, 2000);
 }
 
 function getThemeHint() {

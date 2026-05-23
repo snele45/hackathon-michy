@@ -52,6 +52,17 @@ app.post('/api/explain', async (req, res) => {
       headings: Array.isArray(context?.headings) ? context.headings.slice(0, 10) : [],
       primaryActions: Array.isArray(context?.primaryActions) ? context.primaryActions.slice(0, 20) : [],
       fieldLabels: Array.isArray(context?.fieldLabels) ? context.fieldLabels.slice(0, 20) : [],
+      recentEvents: Array.isArray(context?.recentEvents)
+        ? context.recentEvents
+            .slice(-10)
+            .map((e) => ({
+              at: e?.at || null,
+              kind: e?.kind || null,
+              label: typeof e?.label === 'string' ? e.label.slice(0, 80) : null,
+              urlBefore: typeof e?.urlBefore === 'string' ? e.urlBefore.slice(0, 300) : null,
+              urlAfter: typeof e?.urlAfter === 'string' ? e.urlAfter.slice(0, 300) : null
+            }))
+        : [],
       themeHint: context?.themeHint || null
     };
 
@@ -66,6 +77,7 @@ app.post('/api/explain', async (req, res) => {
       '- Keep steps actionable and short.',
       '- Prefer referencing common UI affordances: menus, tabs, buttons, search boxes, forms.',
       '- Use the Goal text to choose the most relevant actions from Context.primaryActions (e.g., if goal mentions Instagram/social media/templates, prefer matching visible labels like "Templates" or "Social media See all" if present).',
+      '- If Context.recentEvents show recent clicks, use that to infer progress and suggest what to do next.',
       '- Output MUST be valid JSON only (no markdown, no prose outside JSON).',
       '',
       'Return JSON schema:',

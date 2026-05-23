@@ -3,7 +3,9 @@ let state = {
   context: null,
   steps: [],
   currentStepIndex: 0,
-  history: []
+  history: [],
+  busy: false,
+  lastPageEventAt: 0
 };
 
 const el = (id) => document.getElementById(id);
@@ -178,6 +180,7 @@ async function explainNextStep() {
   el('summary').textContent = 'Thinking…';
   el('clarifying').textContent = '';
   el('currentHelp').textContent = '';
+  state.busy = true;
 
   const payload = {
     goal,
@@ -201,6 +204,7 @@ async function explainNextStep() {
     } catch {
       // ignore
     }
+    state.busy = false;
     return;
   }
 
@@ -227,6 +231,136 @@ async function explainNextStep() {
     summary: data.summary || null
   });
 
+  state.busy = false;
+
+  render();
+}
+
+function stepsSignature(steps) {
+  try {
+    return JSON.stringify(
+      (Array.isArray(steps) ? steps : []).map((s) => ({
+        title: s?.title || '',
+        details: s?.details || '',
+        actionLabel: s?.actionLabel || ''
+      }))
+    );
+  } catch {
+    return '';
+  }
+}
+
+function normalizeStepKey(step) {
+  const title = (step?.title || '').trim().toLowerCase();
+  const details = (step?.details || '').trim().toLowerCase();
+  const actionLabel = (step?.actionLabel || '').trim().toLowerCase();
+
+  // Keep details but cap it to reduce noise.
+  const shortDetails = details.length > 80 ? details.slice(0, 80) : details;
+  return `${title}|${actionLabel}|${shortDetails}`.replace(/\s+/g, ' ').trim();
+}
+
+function stepsSimilarity(a, b) {
+  const aList = Array.isArray(a) ? a : [];
+  const bList = Array.isArray(b) ? b : [];
+  if (aList.length === 0 && bList.length === 0) return 1;
+  if (aList.length === 0 || bList.length === 0) return 0;
+
+  const aSet = new Set(aList.map(normalizeStepKey).filter(Boolean));
+  const bSet = new Set(bList.map(normalizeStepKey).filter(Boolean));
+  if (aSet.size === 0 && bSet.size === 0) return 1;
+  if (aSet.size === 0 || bSet.size === 0) return 0;
+
+  let intersection = 0;
+  for (const k of aSet) if (bSet.has(k)) intersection++;
+  const union = aSet.size + bSet.size - intersection;
+  return union ? intersection / union : 0;
+}
+
+async function fetchSuggestedSteps() {
+  const goal = el('goal')?.value?.trim() || '';
+  if (!goal) return null;
+  if (!state.context) return null;
+
+  const payload = {
+    goal,
+    context: state.context,
+    history: state.history,
+    currentStepIndex: state.currentStepIndex,
+    mode: state.steps.length === 0 ? 'plan' : 'step'
+  };
+
+  const resp = await fetch(`${state.backendUrl}/api/explain`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  if (!resp.ok) return null;
+  const data = await resp.json();
+  if (!Array.isArray(data.steps) || data.steps.length === 0) return null;
+  return data;
+}
+
+async function handlePageEvent(event) {
+  const at = Number.isFinite(event?.at) ? event.at : Date.now();
+  if (at <= state.lastPageEventAt) return;
+  state.lastPageEventAt = at;
+  if (state.busy) return;
+
+  // Always re-capture context after a click on the page.
+  setStatus('Updating context…');
+  await captureContext();
+
+  // Mark progress if the click label matches current step actionLabel.
+  const clickedLabel = typeof event?.label === 'string' ? event.label.trim() : '';
+  const currentStep = state.steps[state.currentStepIndex];
+  const expected = typeof currentStep?.actionLabel === 'string' ? currentStep.actionLabel.trim() : '';
+  if (clickedLabel && expected && clickedLabel.toLowerCase() === expected.toLowerCase()) {
+    state.history.push({ at: Date.now(), type: 'click', label: clickedLabel, matchedStep: state.currentStepIndex });
+    state.currentStepIndex = Math.min(state.currentStepIndex + 1, Math.max(0, state.steps.length - 1));
+  } else {
+    state.history.push({ at: Date.now(), type: 'click', label: clickedLabel || null });
+  }
+
+  // If we already have steps, refresh them after each click.
+  const goal = el('goal')?.value?.trim() || '';
+  if (!goal) {
+    setStatus('');
+    render();
+    return;
+  }
+  if (!Array.isArray(state.steps) || state.steps.length === 0) {
+    setStatus('');
+    render();
+    return;
+  }
+
+  state.busy = true;
+  setStatus('Preparing new steps…');
+  const suggested = await fetchSuggestedSteps();
+  state.busy = false;
+
+  if (!suggested?.steps) {
+    setStatus('');
+    render();
+    return;
+  }
+
+  const similarity = stepsSimilarity(state.steps, suggested.steps);
+  const currentSig = stepsSignature(state.steps);
+  const newSig = stepsSignature(suggested.steps);
+
+  // If they are effectively the same, do nothing to avoid confusion.
+  // Threshold tuned: "pretty similar" ~ 85% overlap.
+  if (newSig && newSig !== currentSig && similarity < 0.85) {
+    state.steps = suggested.steps;
+    state.currentStepIndex = Math.max(0, Math.min(state.currentStepIndex, Math.max(0, state.steps.length - 1)));
+    setStatus('');
+  } else {
+    setStatus('');
+  }
+
   render();
 }
 
@@ -239,5 +373,11 @@ function markDone() {
 el('capture').addEventListener('click', captureContext);
 el('explain').addEventListener('click', explainNextStep);
 el('done').addEventListener('click', markDone);
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === 'PAGE_EVENT' && msg?.event) {
+    handlePageEvent(msg.event);
+  }
+});
 
 render();

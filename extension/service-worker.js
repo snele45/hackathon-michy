@@ -31,9 +31,71 @@ async function ensureContentScript(tabId) {
   });
 }
 
+const recentEventsByTab = new Map();
+
+async function storageSet(obj) {
+  try {
+    if (chrome.storage?.session) return await chrome.storage.session.set(obj);
+    return await chrome.storage.local.set(obj);
+  } catch {
+    // ignore
+  }
+}
+
+async function storageGet(keys) {
+  try {
+    if (chrome.storage?.session) return await chrome.storage.session.get(keys);
+    return await chrome.storage.local.get(keys);
+  } catch {
+    return {};
+  }
+}
+
+async function appendRecentEvent(tabId, event) {
+  const key = `recentEvents:${tabId}`;
+  const current = recentEventsByTab.get(tabId);
+  let list = Array.isArray(current) ? current.slice() : null;
+  if (!list) {
+    const stored = await storageGet([key]);
+    list = Array.isArray(stored?.[key]) ? stored[key] : [];
+  }
+
+  list.push(event);
+  list = list.slice(-25);
+  recentEventsByTab.set(tabId, list);
+  await storageSet({ [key]: list });
+  return list;
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {
+      if (msg?.type === 'PAGE_EVENT') {
+        const tabId = _sender?.tab?.id;
+        if (!tabId) {
+          sendResponse({ ok: false, error: 'Missing sender tab.' });
+          return;
+        }
+
+        const event = msg?.event;
+        if (!event || typeof event !== 'object') {
+          sendResponse({ ok: false, error: 'Missing event.' });
+          return;
+        }
+
+        await appendRecentEvent(tabId, event);
+
+        // Broadcast to any open sidepanel.
+        try {
+          chrome.runtime.sendMessage({ type: 'PAGE_EVENT', tabId, event });
+        } catch {
+          // ignore
+        }
+
+        sendResponse({ ok: true });
+        return;
+      }
+
       if (msg?.type === 'CAPTURE_CONTEXT') {
         const tab = await getActiveTab();
         if (!tab?.id) {
@@ -43,7 +105,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
         await ensureContentScript(tab.id);
         const context = await chrome.tabs.sendMessage(tab.id, { type: 'GET_CONTEXT' });
-        sendResponse({ ok: true, context });
+        const key = `recentEvents:${tab.id}`;
+        const recentEvents = recentEventsByTab.get(tab.id) || (await storageGet([key]))?.[key] || [];
+        sendResponse({ ok: true, context: { ...context, recentEvents } });
         return;
       }
 
