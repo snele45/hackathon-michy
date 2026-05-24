@@ -44,6 +44,148 @@ function areaHintForElement(el) {
   }
 }
 
+function overlayRoleForElement(el) {
+  try {
+    if (!el) return null;
+    const dialog = el.closest?.('[role="dialog"], dialog, [aria-modal="true"]');
+    if (dialog && isElementVisible(dialog)) return 'dialog';
+    const menu = el.closest?.('[role="menu"]');
+    if (menu && isElementVisible(menu)) return 'menu';
+    const listbox = el.closest?.('[role="listbox"]');
+    if (listbox && isElementVisible(listbox)) return 'listbox';
+    const tree = el.closest?.('[role="tree"]');
+    if (tree && isElementVisible(tree)) return 'tree';
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function overlayContainerForElement(el) {
+  try {
+    if (!el) return null;
+    return (
+      el.closest?.('[role="dialog"], dialog, [aria-modal="true"], [role="menu"], [role="listbox"], [role="tree"]') ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
+function overlayTitleForContainer(container) {
+  try {
+    if (!container) return null;
+    const aria = (container.getAttribute?.('aria-label') || '').trim();
+    if (aria) return aria.slice(0, 90);
+    const labelledby = (container.getAttribute?.('aria-labelledby') || '').trim();
+    if (labelledby) {
+      const id = labelledby.split(/\s+/g)[0];
+      const node = id ? document.getElementById(id) : null;
+      const t = (node?.innerText || '').replace(/\s+/g, ' ').trim();
+      if (t) return t.slice(0, 90);
+    }
+    const h = container.querySelector?.('h1,h2,h3,[role="heading"]');
+    const ht = (h?.innerText || '').replace(/\s+/g, ' ').trim();
+    if (ht) return ht.slice(0, 90);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function collectActiveOverlays() {
+  const out = [];
+  const nodes = [
+    ...document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"], [role="menu"], [role="listbox"], [role="tree"]')
+  ];
+
+  for (const el of nodes.slice(0, 60)) {
+    if (!isElementVisible(el)) continue;
+    let role = (el.getAttribute?.('role') || '').toLowerCase();
+    if (!role && (el.tagName || '').toLowerCase() === 'dialog') role = 'dialog';
+    if (!role && (el.getAttribute?.('aria-modal') || '').toLowerCase() === 'true') role = 'dialog';
+    if (!role) continue;
+    if (!['dialog', 'menu', 'listbox', 'tree'].includes(role)) continue;
+    const rect = rectForElement(el);
+    if (rect && rect.w < 80) continue;
+    if (rect && rect.h < 40) continue;
+
+    out.push({
+      role,
+      title: overlayTitleForContainer(el),
+      area: areaHintForElement(el),
+      rect,
+      domPath: buildDomHintPath(el).slice(0, 180)
+    });
+    if (out.length >= 4) break;
+  }
+
+  return out;
+}
+
+function collectOverlayActions(activeOverlays) {
+  const overlays = Array.isArray(activeOverlays) ? activeOverlays : [];
+  if (!overlays.length) return [];
+
+  const first = overlays[0];
+  const domPath = first?.domPath;
+  // Best-effort: find the same container again.
+  let container = null;
+  try {
+    if (domPath) {
+      // domPath isn't a selector; just fall back to scanning visible overlays.
+      container = null;
+    }
+  } catch {
+    container = null;
+  }
+  if (!container) {
+    const nodes = [
+      ...document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"], [role="menu"], [role="listbox"], [role="tree"]')
+    ];
+    // pick first visible of the same role
+    container = nodes.find((n) => {
+      if (!isElementVisible(n)) return false;
+      let r = (n.getAttribute?.('role') || '').toLowerCase();
+      if (!r && (n.tagName || '').toLowerCase() === 'dialog') r = 'dialog';
+      if (!r && (n.getAttribute?.('aria-modal') || '').toLowerCase() === 'true') r = 'dialog';
+      return r === (first?.role || '');
+    }) || null;
+  }
+
+  if (!container) return [];
+
+  const out = [];
+  const nodes = [
+    ...container.querySelectorAll(
+      'button, a[href], [role="menuitem"], [role="option"], [role="treeitem"], [role="button"], input[type="button"], input[type="submit"], input[type="reset"]'
+    )
+  ];
+  for (const el of nodes.slice(0, 90)) {
+    if (!isElementVisible(el)) continue;
+    const label = getVisibleActionLabel(el).replace(/\s+/g, ' ').trim();
+    if (!label) continue;
+    if (label.length > 60) continue;
+    const actionId = computeActionId(el);
+    if (!actionId) continue;
+    const rect = rectForElement(el);
+    const { enabled } = elementEnabledState(el);
+    out.push({
+      actionId,
+      label,
+      kind: describeElementKind(el) || null,
+      enabled: typeof enabled === 'boolean' ? enabled : null,
+      rect,
+      overlayRole: first?.role || null,
+      overlayTitle: first?.title || null
+    });
+    if (out.length >= 20) break;
+  }
+
+  return out;
+}
+
 function compactTokens(str, max = 4) {
   const t = (str || '').trim();
   if (!t) return [];
@@ -143,6 +285,41 @@ function fnv1aHex(str) {
     h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
   }
   return h.toString(16).padStart(8, '0');
+}
+
+function svgSignatureForElement(el) {
+  try {
+    if (!el) return null;
+    const svg = el.querySelector?.('svg');
+    if (!svg) return null;
+    let s = (svg.outerHTML || '').toString();
+    if (!s) return null;
+    s = s.replace(/\s+/g, ' ').trim();
+    // Bound size; we only need change detection.
+    if (s.length > 2200) s = s.slice(0, 2200);
+    return fnv1aHex(s);
+  } catch {
+    return null;
+  }
+}
+
+function uiSignatureForElement(el, { label, svgSig } = {}) {
+  try {
+    if (!el) return null;
+    const tag = (el.tagName || '').toLowerCase();
+    const role = getAttr(el, 'role') || '';
+    const cls = (el.className || '').toString().trim().replace(/\s+/g, ' ');
+    const clsShort = cls.length > 140 ? cls.slice(0, 140) : cls;
+    const ariaPressed = getAttr(el, 'aria-pressed') || '';
+    const ariaChecked = getAttr(el, 'aria-checked') || '';
+    const ariaExpanded = getAttr(el, 'aria-expanded') || '';
+    const t = (label || '').toString().trim();
+    const shortLabel = t.length > 90 ? t.slice(0, 90) : t;
+    const sig = [tag, role, shortLabel, clsShort, ariaPressed, ariaChecked, ariaExpanded, svgSig || ''].join('|');
+    return fnv1aHex(sig);
+  } catch {
+    return null;
+  }
 }
 
 function safeCssValue(v) {
@@ -294,8 +471,14 @@ function buildUiActionsAndTargets() {
     const { enabled } = elementEnabledState(el);
     const sel = elementSelectionState(el);
 
-    const container = el.closest('nav, [role="navigation"], aside, header, form, [role="dialog"], [role="menu"], [role="listbox"], [role="tablist"], [role="toolbar"]');
+    const svgSig = svgSignatureForElement(el);
+    const sig = uiSignatureForElement(el, { label, svgSig });
+
+    const container = el.closest('nav, [role="navigation"], aside, header, form, [role="dialog"], dialog, [aria-modal="true"], [role="menu"], [role="listbox"], [role="tablist"], [role="toolbar"], [role="tree"]');
     const containerId = container ? buildDomHintPath(container) : null;
+
+    const overlayRole = overlayRoleForElement(el);
+    const overlayTitle = overlayRole ? overlayTitleForContainer(overlayContainerForElement(el)) : null;
 
     const domRef = buildBestSelectorForElement(el);
     actionIndex.set(actionId, {
@@ -311,7 +494,11 @@ function buildUiActionsAndTargets() {
       enabled: typeof enabled === 'boolean' ? enabled : null,
       area: area || null,
       containerId: containerId || null,
+      overlayRole,
+      overlayTitle,
       rect,
+      sig: sig || null,
+      svgSig: svgSig || null,
       ...sel
     });
 
@@ -1402,6 +1589,8 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
       const label = getVisibleActionLabel(targetEl).trim().replace(/\s+/g, ' ') || null;
       const actionId = computeActionId(targetEl);
       const kind = describeElementKind(targetEl);
+      const overlayRole = overlayRoleForElement(targetEl);
+      const overlayTitle = overlayRole ? overlayTitleForContainer(overlayContainerForElement(targetEl)) : null;
       const urlBefore = location.href;
       const seq = ++__obGlobal.__obState.clickSeq;
       const at = Date.now();
@@ -1411,6 +1600,8 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
         kind,
         label,
         actionId,
+        overlayRole,
+        overlayTitle,
         urlBefore,
         urlAfter: null,
         at,
@@ -1426,6 +1617,8 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
               kind,
               label,
               actionId,
+              overlayRole,
+              overlayTitle,
               urlBefore,
               urlAfter,
               at: Date.now(),
@@ -1491,6 +1684,8 @@ if (!__obGlobal.__obState.changeListenerInstalled) {
       const label = assoc || visible || null;
       const actionId = computeActionId(targetEl);
       const kind = describeElementKind(targetEl);
+      const overlayRole = overlayRoleForElement(targetEl);
+      const overlayTitle = overlayRole ? overlayTitleForContainer(overlayContainerForElement(targetEl)) : null;
       const urlBefore = location.href;
       const seq = ++__obGlobal.__obState.clickSeq;
       const at = Date.now();
@@ -1506,6 +1701,8 @@ if (!__obGlobal.__obState.changeListenerInstalled) {
         kind,
         label,
         actionId,
+        overlayRole,
+        overlayTitle,
         change,
         urlBefore,
         urlAfter: null,
@@ -1524,49 +1721,68 @@ function findBestActionElementByLabel(label, options = {}) {
 
   const hintText = options?.hintText || '';
 
-  const candidates = [...document.querySelectorAll(getClickableSelectors())];
+  const findFromCandidates = (candidates) => {
+    const normalizedTarget = target.toLowerCase();
 
-  const normalizedTarget = target.toLowerCase();
-
-  const exactMatches = [];
-  const partialMatches = [];
-  for (const el of candidates) {
-    if (!isElementVisible(el)) continue;
-    const t = getVisibleActionLabel(el).trim().replace(/\s+/g, ' ');
-    if (!t) continue;
-    if (t.length > 60) continue;
-    const normalized = t.toLowerCase();
-    if (normalized === normalizedTarget) {
-      exactMatches.push({ el, label: t });
-      continue;
+    const exactMatches = [];
+    const partialMatches = [];
+    for (const el of candidates) {
+      if (!isElementVisible(el)) continue;
+      const t = getVisibleActionLabel(el).trim().replace(/\s+/g, ' ');
+      if (!t) continue;
+      if (t.length > 60) continue;
+      const normalized = t.toLowerCase();
+      if (normalized === normalizedTarget) {
+        exactMatches.push({ el, label: t });
+        continue;
+      }
+      if (normalized.includes(normalizedTarget)) {
+        partialMatches.push({ el, label: t });
+      }
     }
-    if (normalized.includes(normalizedTarget)) {
-      partialMatches.push({ el, label: t });
+
+    if (exactMatches.length === 1) return { el: exactMatches[0].el, matchedLabel: target };
+    if (exactMatches.length > 1) {
+      exactMatches.sort((a, b) => scoreCandidateWithHint(b.el, target, hintText) - scoreCandidateWithHint(a.el, target, hintText));
+      return { el: exactMatches[0].el, matchedLabel: target };
     }
+
+    if (partialMatches.length === 1) {
+      return { el: partialMatches[0].el, matchedLabel: partialMatches[0].label };
+    }
+
+    if (partialMatches.length > 1) {
+      partialMatches.sort((a, b) => {
+        const scoreDiff = scoreCandidateWithHint(b.el, partialMatches[0]?.label || target, hintText) - scoreCandidateWithHint(a.el, partialMatches[0]?.label || target, hintText);
+        if (scoreDiff) return scoreDiff;
+        return (a.label || '').length - (b.label || '').length;
+      });
+      return { el: partialMatches[0].el, matchedLabel: partialMatches[0].label };
+    }
+
+    return null;
+  };
+
+  // If an overlay (dialog/menu/listbox) is open, prefer matching inside it first.
+  const overlays = [];
+  try {
+    for (const node of document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"], [role="menu"], [role="listbox"], [role="tree"]')) {
+      if (!isElementVisible(node)) continue;
+      overlays.push(node);
+      if (overlays.length >= 2) break;
+    }
+  } catch {
+    // ignore
   }
 
-  if (exactMatches.length === 1) return { el: exactMatches[0].el, matchedLabel: target };
-  if (exactMatches.length > 1) {
-    exactMatches.sort((a, b) => scoreCandidateWithHint(b.el, target, hintText) - scoreCandidateWithHint(a.el, target, hintText));
-    return { el: exactMatches[0].el, matchedLabel: target };
+  if (overlays.length) {
+    const overlayCandidates = [...overlays[0].querySelectorAll(getClickableSelectors())];
+    const overlayHit = findFromCandidates(overlayCandidates);
+    if (overlayHit?.el) return overlayHit;
   }
 
-  // Safe fallback: if the partial match is unique, use it.
-  if (partialMatches.length === 1) {
-    return { el: partialMatches[0].el, matchedLabel: partialMatches[0].label };
-  }
-
-  // If multiple partial matches, pick the shortest label (often the closest).
-  if (partialMatches.length > 1) {
-    partialMatches.sort((a, b) => {
-      const scoreDiff = scoreCandidateWithHint(b.el, partialMatches[0]?.label || target, hintText) - scoreCandidateWithHint(a.el, partialMatches[0]?.label || target, hintText);
-      if (scoreDiff) return scoreDiff;
-      return (a.label || '').length - (b.label || '').length;
-    });
-    return { el: partialMatches[0].el, matchedLabel: partialMatches[0].label };
-  }
-
-  return null;
+  const docCandidates = [...document.querySelectorAll(getClickableSelectors())];
+  return findFromCandidates(docCandidates);
 }
 
 function getVisibleFieldLabel(fieldEl) {
@@ -2096,6 +2312,9 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
       const interactiveContainers = collectInteractiveContainers();
       const { uiActions, visualTargets, actionIndex } = buildUiActionsAndTargets();
 
+      const activeOverlays = collectActiveOverlays();
+      const overlayActions = collectOverlayActions(activeOverlays);
+
       // Update index so highlight-by-actionId works.
       __obGlobal.__obState.actionIndex = actionIndex;
 
@@ -2119,6 +2338,8 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
         primaryFields: fieldCandidates.map((f) => f.label).filter(Boolean).slice(0, 20),
         dropdownTriggers,
         openMenuGroups,
+        activeOverlays,
+        overlayActions,
         uiActions,
         visualTargets,
         themeHint: getThemeHint()
@@ -2151,6 +2372,22 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
             highlightElement(el);
             sendResponse({ ok: true, matchedLabel: entry?.label || null, kind: describeElementKind(el) || null });
             return;
+          }
+
+          // Fallback: scan clickable elements and find the one whose computed actionId matches.
+          try {
+            const nodes = [...document.querySelectorAll(getClickableSelectors())].slice(0, 1200);
+            for (const node of nodes) {
+              if (!isElementVisible(node)) continue;
+              const id = computeActionId(node);
+              if (id && id === actionId) {
+                highlightElement(node);
+                sendResponse({ ok: true, matchedLabel: getVisibleActionLabel(node).trim() || entry?.label || null, kind: describeElementKind(node) || null });
+                return;
+              }
+            }
+          } catch {
+            // ignore
           }
         }
 

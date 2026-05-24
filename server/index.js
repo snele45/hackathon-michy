@@ -162,6 +162,71 @@ app.post('/api/explain', async (req, res) => {
       return goalTokens.some((k) => t.includes(k));
     }
 
+    function normLabel(s) {
+      return (s || '').toString().trim().replace(/\s+/g, ' ').toLowerCase();
+    }
+
+    function bestLabelMatch(input, options) {
+      const target = normLabel(input);
+      if (!target) return null;
+      const opts = Array.isArray(options) ? options.filter(Boolean) : [];
+      if (!opts.length) return null;
+
+      // exact
+      const exact = opts.find((x) => normLabel(x) === target);
+      if (exact) return exact;
+
+      // partial (prefer shortest containing match)
+      const partial = opts.filter((x) => normLabel(x).includes(target));
+      if (partial.length === 1) return partial[0];
+      if (partial.length > 1) {
+        partial.sort((a, b) => a.length - b.length);
+        return partial[0];
+      }
+      return null;
+    }
+
+    function inferSingleMentionedLabel(text, labels) {
+      const raw = (text || '').toString();
+      const t = normLabel(raw);
+      if (!t) return null;
+      const opts = Array.isArray(labels) ? labels.filter((x) => typeof x === 'string' && x.trim().length >= 2) : [];
+      if (!opts.length) return null;
+
+      const escapeRegExp = (s) => (s || '').toString().replace(/[-/\\^$*+?.()|[\\]{}]/g, '\\$&');
+      const rawLower = raw.toLowerCase();
+
+      // Prefer longer labels to avoid substring collisions (but still allow short all-caps popup options).
+      const sorted = [...new Set(opts)].sort((a, b) => b.length - a.length);
+      const hits = [];
+      for (const lbl of sorted) {
+        const rawLbl = (lbl || '').toString().trim();
+        const k = normLabel(rawLbl);
+        if (!k) continue;
+
+        let mentioned = false;
+        if (k.length <= 4) {
+          // Short labels (OFF/RUN/OK) should only match as whole words.
+          try {
+            const re = new RegExp(`\\b${escapeRegExp(k)}\\b`, 'i');
+            mentioned = re.test(rawLower);
+          } catch {
+            mentioned = false;
+          }
+        } else {
+          mentioned = t.includes(k);
+        }
+
+        if (mentioned) hits.push(lbl);
+        if (hits.length > 2) break;
+      }
+
+      const unique = [...new Set(hits.map((x) => normLabel(x)))];
+      if (unique.length !== 1) return null;
+      const key = unique[0];
+      return sorted.find((x) => normLabel(x) === key) || null;
+    }
+
     function scoreUiAction(a, goalTokens) {
       if (!a || typeof a !== 'object') return -999;
       let score = 0;
@@ -169,6 +234,7 @@ app.post('/api/explain', async (req, res) => {
       const label = (a.label || '').toString().toLowerCase();
       const semanticType = (a.semanticType || '').toString().toLowerCase();
       const area = (a.area || '').toString().toLowerCase();
+      const overlayRole = (a.overlayRole || '').toString().toLowerCase();
 
       for (const k of goalTokens) {
         if (label.includes(k)) score += 8;
@@ -176,6 +242,9 @@ app.post('/api/explain', async (req, res) => {
 
       if (area === 'left' || area === 'top') score += 2;
       if (semanticType.includes('nav') || semanticType.includes('tab')) score += 1;
+
+      // When an overlay is present (dialog/menu/listbox), prefer controls inside it.
+      if (overlayRole === 'dialog' || overlayRole === 'menu' || overlayRole === 'listbox' || overlayRole === 'tree') score += 5;
 
       if (a.enabled === false) score -= 6;
       if (a.visible === false) score -= 8;
@@ -280,6 +349,39 @@ app.post('/api/explain', async (req, res) => {
             items: Array.isArray(g?.items) ? g.items.slice(0, 12) : []
           }))
         : [],
+      activeOverlays: Array.isArray(context?.activeOverlays)
+        ? context.activeOverlays.slice(0, 4).map((o) => ({
+            role: o?.role || null,
+            title: typeof o?.title === 'string' ? o.title.slice(0, 90) : null,
+            area: o?.area || null,
+            rect: o?.rect && typeof o.rect === 'object'
+              ? {
+                  x: Number.isFinite(o.rect.x) ? o.rect.x : null,
+                  y: Number.isFinite(o.rect.y) ? o.rect.y : null,
+                  w: Number.isFinite(o.rect.w) ? o.rect.w : null,
+                  h: Number.isFinite(o.rect.h) ? o.rect.h : null
+                }
+              : null
+          }))
+        : [],
+      overlayActions: Array.isArray(context?.overlayActions)
+        ? context.overlayActions.slice(0, 24).map((x) => ({
+            actionId: typeof x?.actionId === 'string' ? x.actionId.slice(0, 40) : null,
+            label: typeof x?.label === 'string' ? x.label.slice(0, 80) : null,
+            kind: x?.kind || null,
+            enabled: typeof x?.enabled === 'boolean' ? x.enabled : null,
+            overlayRole: x?.overlayRole || null,
+            overlayTitle: typeof x?.overlayTitle === 'string' ? x.overlayTitle.slice(0, 90) : null,
+            rect: x?.rect && typeof x.rect === 'object'
+              ? {
+                  x: Number.isFinite(x.rect.x) ? x.rect.x : null,
+                  y: Number.isFinite(x.rect.y) ? x.rect.y : null,
+                  w: Number.isFinite(x.rect.w) ? x.rect.w : null,
+                  h: Number.isFinite(x.rect.h) ? x.rect.h : null
+                }
+              : null
+          }))
+        : [],
       uiActions: Array.isArray(context?.uiActions)
         ? context.uiActions.slice(0, 180).map((a) => ({
             actionId: typeof a?.actionId === 'string' ? a.actionId.slice(0, 40) : null,
@@ -289,6 +391,8 @@ app.post('/api/explain', async (req, res) => {
             enabled: typeof a?.enabled === 'boolean' ? a.enabled : null,
             area: a?.area || null,
             containerId: typeof a?.containerId === 'string' ? a.containerId.slice(0, 120) : null,
+            overlayRole: typeof a?.overlayRole === 'string' ? a.overlayRole.slice(0, 20) : null,
+            overlayTitle: typeof a?.overlayTitle === 'string' ? a.overlayTitle.slice(0, 90) : null,
             rect: a?.rect && typeof a.rect === 'object'
               ? {
                   x: Number.isFinite(a.rect.x) ? a.rect.x : null,
@@ -328,6 +432,11 @@ app.post('/api/explain', async (req, res) => {
               at: e?.at || null,
               kind: e?.kind || null,
               label: typeof e?.label === 'string' ? e.label.slice(0, 80) : null,
+              actionId: typeof e?.actionId === 'string' ? e.actionId.slice(0, 40) : null,
+              overlayRole: typeof e?.overlayRole === 'string' ? e.overlayRole.slice(0, 20) : null,
+              overlayTitle: typeof e?.overlayTitle === 'string' ? e.overlayTitle.slice(0, 90) : null,
+              eventType: typeof e?.eventType === 'string' ? e.eventType.slice(0, 12) : null,
+              change: e?.change || null,
               urlBefore: typeof e?.urlBefore === 'string' ? e.urlBefore.slice(0, 300) : null,
               urlAfter: typeof e?.urlAfter === 'string' ? e.urlAfter.slice(0, 300) : null
             }))
@@ -368,6 +477,7 @@ app.post('/api/explain', async (req, res) => {
       .slice(0, 16);
 
     // Rank UI actions by goal relevance and keep only top candidates.
+    const hasOverlay = Array.isArray(safeContext.activeOverlays) && safeContext.activeOverlays.length > 0;
     const rankedUiActions = (safeContext.uiActions || [])
       .map((a) => ({ ...a, relevanceScore: scoreUiAction(a, goalTokens) }))
       .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
@@ -375,6 +485,15 @@ app.post('/api/explain', async (req, res) => {
 
     focused.uiActions = rankedUiActions;
     focused.visualTargets = (safeContext.visualTargets || []).slice(0, 40);
+
+    // If overlay is present, keep overlayActions as high-signal context.
+    if (hasOverlay) {
+      focused.activeOverlays = safeContext.activeOverlays;
+      focused.overlayActions = safeContext.overlayActions;
+    } else {
+      focused.activeOverlays = [];
+      focused.overlayActions = [];
+    }
 
     // Prefer focused context when we have enough signal.
     const contextForModel = {
@@ -384,6 +503,8 @@ app.post('/api/explain', async (req, res) => {
       navigationGroups: safeContext.navigationGroups,
       dropdownTriggers: safeContext.dropdownTriggers,
       openMenuGroups: safeContext.openMenuGroups,
+      activeOverlays: focused.activeOverlays,
+      overlayActions: focused.overlayActions,
       recentEvents: safeContext.recentEvents,
       navGraph: safeContext.navGraph,
       fieldLabels: safeContext.fieldLabels,
@@ -391,6 +512,36 @@ app.post('/api/explain', async (req, res) => {
       fieldCandidates: safeContext.fieldCandidates,
       themeHint: safeContext.themeHint
     };
+
+    // A compact, explicit list of allowed click targets for the model.
+    const allowedTargets = (rankedUiActions || [])
+      .filter((a) => typeof a?.actionId === 'string' && typeof a?.label === 'string' && a.actionId && a.label)
+      .slice(0, 28)
+      .map((a) => ({
+        actionId: a.actionId,
+        label: a.label,
+        semanticType: a.semanticType || null,
+        area: a.area || null,
+        overlayRole: a.overlayRole || null,
+        overlayTitle: a.overlayTitle || null,
+        enabled: typeof a.enabled === 'boolean' ? a.enabled : null
+      }));
+
+    // Overlay actions are the most time-sensitive; prepend them to AllowedTargets.
+    const overlayTargets = (contextForModel.overlayActions || [])
+      .filter((x) => typeof x?.actionId === 'string' && typeof x?.label === 'string' && x.actionId && x.label)
+      .slice(0, 18)
+      .map((x) => ({
+        actionId: x.actionId,
+        label: x.label,
+        semanticType: x.kind || null,
+        area: null,
+        overlayRole: x.overlayRole || null,
+        overlayTitle: x.overlayTitle || null,
+        enabled: typeof x.enabled === 'boolean' ? x.enabled : null
+      }));
+
+    const allowedTargetsMerged = [...overlayTargets, ...allowedTargets].slice(0, 32);
 
     // ---- Workflow normalization (minimal) ----
     const workflowState = {
@@ -487,6 +638,7 @@ app.post('/api/explain', async (req, res) => {
       '- Keep the step title short and actionable.',
       '- HARD LIMIT: steps[0].details MUST be <= 400 characters. Do not exceed this; optimize wording to fit.',
       '- details should include: (1) what to click/type, (2) where it is (area/nearby labels), (3) what success looks like, and (4) one short fallback if the UI differs.',
+      '- summary MUST describe the same action as steps[0] (do not mention a different click target than actionLabel/actionId).',
       '- Prefer referencing common UI affordances: menus, tabs, buttons, search boxes, forms.',
       '- Use the Goal text to choose the most relevant actions from Context.primaryActions (e.g., if goal mentions Instagram/social media/templates, prefer matching visible labels like "Templates" or "Social media See all" if present).',
       '- If Context.openMenuGroups includes visible items (dropdown/menu options), prefer selecting an actionLabel from those items when guiding through submenus.',
@@ -501,7 +653,7 @@ app.post('/api/explain', async (req, res) => {
       '{',
       '  "summary": string,',
       '  "clarifyingQuestion": null,',
-      '  "steps": Array<{"title": string, "details": string, "actionId"?: string, "actionLabel"?: string, "visualTargetNumber"?: number}>,',
+      '  "steps": Array<{"title": string, "details": string, "actionId"?: string, "actionLabel"?: string, "visualTargetNumber"?: number, "isFinalStep"?: boolean}>,',
       '  "currentStepIndex": number,',
       '  "currentStepHelp": string',
       '}',
@@ -523,8 +675,10 @@ app.post('/api/explain', async (req, res) => {
       '- If a step requires clicking a button/link, set actionLabel to the exact visible label.',
       '- If a step requires filling a field, set actionLabel to the field label OR placeholder text (what the user sees).',
       '- If Context.uiActions exists, prefer returning steps[0].actionId from Context.uiActions.actionId (this makes highlighting deterministic).',
+      '- Prefer choosing your actionId/actionLabel from AllowedTargets when possible (do not invent labels).',
       '- If Context.visualTargets exists, you may also return visualTargetNumber from the matching visualTargets.number.',
       '- IMPORTANT: Put the main guidance in steps[0].details and the click target in steps[0].actionLabel. currentStepHelp should be empty or at most a short fallback hint.',
+      '- If you believe this step COMPLETES the user\'s Goal (final action), set steps[0].isFinalStep = true. Otherwise omit it or set it to false.',
       '- Prefer an EXACT match from Context.primaryActions or Context.primaryFields (case-insensitive match is ok) so the UI can locate/highlight it.',
       '- Prefer visible text. If an element is icon-only with no visible label, using its aria-label or title is acceptable as a fallback.',
       '- If you cannot confidently provide an exact actionLabel from context, omit actionLabel and instead describe WHERE it is (left sidebar/top bar/right panel/main area) using Context.navigationGroups[*].area and the surrounding labels.',
@@ -536,6 +690,9 @@ app.post('/api/explain', async (req, res) => {
       '',
       'Previous step (single-step UI):',
       JSON.stringify(previousStep),
+      '',
+      'AllowedTargets (choose from here when possible):',
+      JSON.stringify(allowedTargetsMerged),
       '',
       'Workflow state (normalized):',
       JSON.stringify(workflowState),
@@ -656,6 +813,98 @@ app.post('/api/explain', async (req, res) => {
 
       // Single-step UI always points at the only step.
       data.currentStepIndex = 0;
+
+      // Normalize step fields.
+      if (Array.isArray(data.steps) && data.steps.length === 1) {
+        const step0 = data.steps[0] && typeof data.steps[0] === 'object' ? data.steps[0] : {};
+        if (Object.prototype.hasOwnProperty.call(step0, 'isFinalStep')) {
+          step0.isFinalStep = Boolean(step0.isFinalStep);
+          data.steps[0] = step0;
+        }
+      }
+
+      // Keep actionId/actionLabel consistent with allowed UI candidates when possible.
+      if (Array.isArray(data.steps) && data.steps.length === 1) {
+        const step0 = data.steps[0] && typeof data.steps[0] === 'object' ? data.steps[0] : {};
+
+        const uiList = Array.isArray(contextForModel?.uiActions) ? contextForModel.uiActions : [];
+        const byId = new Map(
+          uiList
+            .filter((a) => typeof a?.actionId === 'string' && a.actionId)
+            .map((a) => [a.actionId, a])
+        );
+        const uiLabels = uiList.map((a) => a?.label).filter(Boolean);
+
+        const overlayActionLabels = (Array.isArray(contextForModel?.overlayActions) ? contextForModel.overlayActions : [])
+          .map((x) => x?.label)
+          .filter(Boolean);
+
+        const menuLabels = [];
+        try {
+          const groups = Array.isArray(contextForModel?.openMenuGroups) ? contextForModel.openMenuGroups : [];
+          for (const g of groups) {
+            const items = Array.isArray(g?.items) ? g.items : [];
+            for (const it of items) if (typeof it === 'string' && it.trim()) menuLabels.push(it);
+          }
+        } catch {
+          // ignore
+        }
+
+        const allowedLabels = [
+          ...(Array.isArray(contextForModel?.primaryActions) ? contextForModel.primaryActions : []),
+          ...(Array.isArray(contextForModel?.navItems) ? contextForModel.navItems : []),
+          ...(Array.isArray(contextForModel?.primaryFields) ? contextForModel.primaryFields : []),
+          ...overlayActionLabels,
+          ...uiLabels,
+          ...menuLabels
+        ].filter(Boolean);
+        const allowedSet = new Set(allowedLabels.map(normLabel).filter(Boolean));
+
+        const rawId = typeof step0.actionId === 'string' ? step0.actionId.trim() : '';
+        if (rawId && !byId.has(rawId)) delete step0.actionId;
+
+        const resolvedId = typeof step0.actionId === 'string' ? step0.actionId.trim() : '';
+        if (resolvedId && byId.has(resolvedId)) {
+          const entry = byId.get(resolvedId);
+          if (entry?.label) step0.actionLabel = entry.label;
+        }
+
+        const rawLabel = typeof step0.actionLabel === 'string' ? step0.actionLabel : '';
+        const key = normLabel(rawLabel);
+        if (rawLabel && key && !allowedSet.has(key)) {
+          const best = bestLabelMatch(rawLabel, allowedLabels);
+          if (best) step0.actionLabel = best;
+        }
+
+        // If summary/details clearly mention a single allowed label, align step to it.
+        const combinedText = [
+          typeof data.summary === 'string' ? data.summary : '',
+          typeof step0.details === 'string' ? step0.details : ''
+        ].join('\n');
+        const inferred = inferSingleMentionedLabel(combinedText, allowedLabels);
+        if (inferred) {
+          step0.actionLabel = inferred;
+          const inferredKey = normLabel(inferred);
+
+          // If multiple UI actions share the same label, prefer overlay ones when an overlay is present.
+          const candidates = uiList.filter((a) => normLabel(a?.label || '') === inferredKey);
+          let entry = candidates[0] || null;
+          if (hasOverlay && candidates.length > 1) {
+            const overlayFirst = candidates.find((a) => (a?.overlayRole || '').toString().length > 0);
+            if (overlayFirst) entry = overlayFirst;
+          }
+          if (entry?.actionId) step0.actionId = entry.actionId;
+        }
+
+        // If after all normalization the actionLabel is still not an allowed visible label, drop it.
+        const finalKey = normLabel(step0.actionLabel || '');
+        if (finalKey && !allowedSet.has(finalKey)) {
+          delete step0.actionLabel;
+          delete step0.actionId;
+        }
+
+        data.steps[0] = step0;
+      }
 
       // If the model put the real guidance into currentStepHelp, migrate it into the step details.
       if (Array.isArray(data.steps) && data.steps.length === 1) {
