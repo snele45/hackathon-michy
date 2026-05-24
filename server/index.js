@@ -4,6 +4,9 @@ import dotenv from 'dotenv';
 import OpenAI from 'openai';
 import { randomUUID } from 'crypto';
 import { MemoryStore, buildMemoryDocuments, defaultMemoryFilePath } from './memoryStore.js';
+import { readFile } from 'node:fs/promises';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 dotenv.config();
 
@@ -24,6 +27,94 @@ const client = OPENAI_API_KEY
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const PLAYBOOKS_FILE = resolve(__dirname, 'data', 'playbooks.json');
+
+function safeJsonParse(text, fallback) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
+}
+
+async function loadPlaybooks() {
+  try {
+    const raw = await readFile(PLAYBOOKS_FILE, 'utf8');
+    const parsed = safeJsonParse(raw, []);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeTokens(text) {
+  const raw = (text || '').toString().toLowerCase();
+  return raw
+    .split(/[^a-z0-9_\-./]+/g)
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .filter((t) => t.length >= 2);
+}
+
+function pickHost(url) {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
+
+function selectRelevantPlaybooks(playbooks, { url, goal }) {
+  const host = pickHost(url);
+  const goalTokens = new Set(normalizeTokens(goal));
+  const urlLower = (url || '').toString().toLowerCase();
+
+  const scored = (Array.isArray(playbooks) ? playbooks : [])
+    .filter((p) => p && typeof p === 'object')
+    .filter((p) => p.enabled !== false)
+    .map((p) => {
+      let score = 0;
+      const hosts = Array.isArray(p.hosts) ? p.hosts.filter(Boolean) : [];
+      const urlContains = Array.isArray(p.urlContains) ? p.urlContains.filter(Boolean) : [];
+      const goalHints = Array.isArray(p.goalHints) ? p.goalHints.filter(Boolean) : [];
+
+      if (hosts.length && host) {
+        if (hosts.some((h) => (h || '').toString().toLowerCase() === host.toLowerCase())) score += 60;
+        else score -= 10;
+      }
+
+      for (const frag of urlContains) {
+        const f = (frag || '').toString().toLowerCase();
+        if (!f) continue;
+        if (urlLower.includes(f)) score += 12;
+      }
+
+      for (const hint of goalHints) {
+        const h = (hint || '').toString().toLowerCase();
+        if (!h) continue;
+        if (goalTokens.has(h)) score += 14;
+        else if ([...goalTokens].some((t) => t.includes(h) || h.includes(t))) score += 6;
+      }
+
+      const text = typeof p.text === 'string' ? p.text.trim() : '';
+      if (text) score += Math.min(8, Math.floor(text.length / 180));
+
+      return {
+        id: typeof p.id === 'string' ? p.id.slice(0, 80) : null,
+        score,
+        text: text ? text.slice(0, 1400) : null
+      };
+    })
+    .filter((x) => x.text)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+
+  return scored.map((x) => ({ id: x.id, text: x.text }));
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -258,6 +349,15 @@ app.post('/api/explain', async (req, res) => {
     const goalTokens = tokenizeGoal(goal);
     const isGitHub = typeof context?.url === 'string' && context.url.includes('github.com');
     const wantsBranches = /\bbranch(es)?\b/i.test(goal);
+
+    // ---- User-authored Playbooks (demo knowledge base) ----
+    let relevantPlaybooks = [];
+    try {
+      const playbooks = await loadPlaybooks();
+      relevantPlaybooks = selectRelevantPlaybooks(playbooks, { url: context?.url || urlHint || '', goal });
+    } catch {
+      relevantPlaybooks = [];
+    }
 
     const safeContext = {
       url: context?.url || null,
@@ -702,6 +802,9 @@ app.post('/api/explain', async (req, res) => {
       '',
       'Retrieved memory (vector DB top matches, compact):',
       JSON.stringify(retrievedMemory),
+      '',
+      'User playbooks (authoritative workflow notes; follow them when applicable):',
+      JSON.stringify(relevantPlaybooks),
       '',
       'Context JSON:',
       JSON.stringify(contextForModel),

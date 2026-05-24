@@ -1,0 +1,18 @@
+[
+  {
+    "id": "inductiveautomation-water-treatment-fan",
+    "enabled": true,
+    "hosts": ["demo.inductiveautomation.com"],
+    "urlContains": ["/data/perspective/client/water-treatment-demo/"],
+    "goalHints": ["fan", "run", "start", "stop", "off", "auto", "pause"],
+    "text": "Flow: Control / shut down the Fan in the Inductive Automation Water Treatment Demo.\n\nKey grounding: this is a 2-click flow. Clicking the Fan control only opens a popup. The actual action is always one of the popup options.\n\n1) Find and click the Fan control (visible label: Fan). Clicking it opens an overlay/popup next to the control.\n2) INSIDE the popup, you will see exactly these 4 option labels: Run, Stop, Off, Auto. These are the only valid next actions.\n   - To shut down / turn off the fan: click Off\n   - To pause / stop the fan: click Stop\n   - To start the fan: click Run\n   - To return to automatic control: click Auto\n\nPopup targeting rules (strict):\n- After clicking Fan, the very next step must be clicking one of the popup labels (Run/Stop/Off/Auto). Do not treat clicking Fan as the final step.\n- When the popup is open, only consider targets inside the popup. Ignore any background text/buttons with the same words.\n- Always return an actionLabel that matches the exact visible popup label (case-sensitive as shown). If an actionId exists in overlayActions/uiActions for that popup option, return it.\n\nSuccess signal:\n- After clicking the popup option, the fan state changes and/or the fan SVG/icon changes. Treat the visual state change as success."
+  },
+  {
+    "id": "EXAMPLE-mode-toggle",
+    "enabled": false,
+    "hosts": ["app.example.com"],
+    "urlContains": ["/dashboard"],
+    "goalHints": ["mode", "auto", "run", "stop", "off"],
+    "text": "Flow: Change mode via the Mode control. Expected UI: clicking 'Mode' opens a popup with OFF/AUTO/STOP/RUN options. Prefer clicking those exact labels when present. Success often shows as an icon/SVG state change (filled vs outline) and/or a label update near the mode selector. If a popup is open, targets inside it take priority over background elements with the same labels."
+  }
+]
