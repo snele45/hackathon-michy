@@ -1,14 +1,14 @@
 :root {
-  --ui-bg: #f7f9fc;
-  --ui-fg: #0b1b33;
-  --ui-muted: rgba(11, 27, 51, 0.68);
-  --ui-card: #ffffff;
-  --ui-border: rgba(11, 27, 51, 0.14);
-  --ui-accent: #2563eb;
-  --ui-accent-2: #1d4ed8;
-  --ui-accent-bg: rgba(37, 99, 235, 0.1);
-  --ui-danger: #b91c1c;
-  --ui-font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  --ui-bg: #F7F9FC;
+  --ui-card: #FFFFFF;
+  --ui-fg: #0F2153;
+  --ui-muted: #5A6A85;
+  --ui-border: rgba(27,94,191,0.14);
+  --ui-accent: #1B5EBF;
+  --ui-accent-2: #1A9A7C;
+  --ui-accent-bg: rgba(27,94,191,0.07);
+  --ui-danger: #C13030;
+  --ui-font: 'DM Sans', system-ui, sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -29,7 +29,43 @@ body {
   margin-bottom: 10px;
 }
 
-.title { font-weight: 700; font-size: 14px; }
+.headerTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brandLogo {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  flex: 0 0 auto;
+}
+
+.brandText {
+  min-width: 0;
+}
+
+.runtimePill {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ui-accent-2);
+  border: 1px solid var(--ui-border);
+  background: #ffffff;
+  padding: 6px 10px;
+  border-radius: 999px;
+}
+
+.title { font-weight: 800; font-size: 14px; letter-spacing: 0.1px; }
 .subtitle { font-size: 12px; color: var(--ui-muted); margin-top: 2px; }
 
 #statusLine {
@@ -42,6 +78,18 @@ body {
   border-radius: 10px;
   padding: 10px;
   margin-bottom: 10px;
+}
+
+.h1 {
+  font-size: 20px;
+  font-weight: 800;
+  margin: 0;
+}
+
+.h2 {
+  font-size: 14px;
+  font-weight: 800;
+  margin: 0;
 }
 
 .row {
@@ -75,8 +123,8 @@ body {
 }
 
 .input:focus {
-  border-color: rgba(37, 99, 235, 0.65);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  border-color: rgba(27, 94, 191, 0.65);
+  box-shadow: 0 0 0 3px rgba(27, 94, 191, 0.14);
 }
 
 .btn {
@@ -90,7 +138,7 @@ body {
 }
 
 .btn.primary {
-  border-color: rgba(37, 99, 235, 0.45);
+  border-color: rgba(27, 94, 191, 0.45);
   background: var(--ui-accent);
   color: #ffffff;
 }
@@ -100,17 +148,17 @@ body {
 }
 
 .btn:hover {
-  border-color: rgba(37, 99, 235, 0.35);
+  border-color: rgba(27, 94, 191, 0.35);
 }
 
 .btn.danger {
   color: var(--ui-danger);
-  border-color: rgba(185, 28, 28, 0.32);
+  border-color: rgba(193, 48, 48, 0.32);
   background: #ffffff;
 }
 
 .btn.danger:hover {
-  border-color: rgba(185, 28, 28, 0.55);
+  border-color: rgba(193, 48, 48, 0.55);
 }
 
 .btn:disabled {
@@ -131,7 +179,7 @@ body {
   padding: 8px;
   border-radius: 8px;
   border: 1px solid var(--ui-border);
-  background: rgba(37, 99, 235, 0.04);
+  background: rgba(27, 94, 191, 0.04);
   font-size: 11px;
   color: var(--ui-muted);
 }
@@ -159,12 +207,12 @@ body {
   padding: 6px 8px;
   border: 1px solid var(--ui-border);
   border-radius: 8px;
-  background: rgba(37, 99, 235, 0.04);
+  background: rgba(27, 94, 191, 0.04);
 }
 
 .steps li.active {
-  border-color: rgba(37, 99, 235, 0.7);
-  background: rgba(37, 99, 235, 0.09);
+  border-color: rgba(27, 94, 191, 0.7);
+  background: rgba(27, 94, 191, 0.09);
 }
 
 .stepMeta {
@@ -180,7 +228,7 @@ body {
   justify-content: center;
   padding: 7px 10px;
   border-radius: 10px;
-  border: 1px solid rgba(37, 99, 235, 0.35);
+  border: 1px solid rgba(27, 94, 191, 0.35);
   background: var(--ui-accent);
   color: #ffffff;
   font-weight: 700;
@@ -196,7 +244,7 @@ body {
 }
 
 .actionPreview:focus {
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  box-shadow: 0 0 0 3px rgba(27, 94, 191, 0.18);
 }
 
 .actionPreview.secondary {

@@ -1271,10 +1271,116 @@ __obGlobal.__obState = __obGlobal.__obState || {
   clickListenerInstalled: false,
   changeListenerInstalled: false,
   messageListenerInstalled: false,
+  cornerIndicatorInstalled: false,
   actionIndex: new Map(),
   lastNonClickSig: null,
   lastNonClickAt: 0
 };
+
+function installCornerIndicator() {
+  try {
+    if (__obGlobal.__obState.cornerIndicatorInstalled) return;
+    __obGlobal.__obState.cornerIndicatorInstalled = true;
+
+    const root = document.documentElement || document.body;
+    if (!root) return;
+
+    // Avoid duplicates if the DOM already contains it.
+    if (document.querySelector('[data-tandem-corner="1"]')) return;
+
+    const wrap = document.createElement('div');
+    wrap.setAttribute('data-tandem-corner', '1');
+    wrap.style.position = 'fixed';
+    wrap.style.right = '12px';
+    wrap.style.bottom = '12px';
+    wrap.style.zIndex = '2147483644';
+    wrap.style.fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute('aria-label', 'Open Tandem');
+    btn.style.display = 'inline-flex';
+    btn.style.alignItems = 'center';
+    btn.style.gap = '8px';
+    btn.style.padding = '8px 10px';
+    btn.style.borderRadius = '999px';
+    btn.style.border = '1px solid rgba(26,154,124,0.28)';
+    btn.style.background = 'rgba(255,255,255,0.96)';
+    btn.style.color = '#0F2153';
+    btn.style.fontSize = '12px';
+    btn.style.fontWeight = '800';
+    btn.style.cursor = 'pointer';
+    btn.style.boxShadow = '0 8px 22px rgba(15,33,83,0.14), 0 0 0 4px rgba(26,154,124,0.22), 0 14px 36px rgba(26,154,124,0.22)';
+    btn.style.userSelect = 'none';
+
+    const img = document.createElement('img');
+    img.alt = '';
+    img.width = 18;
+    img.height = 18;
+    img.style.borderRadius = '5px';
+    img.style.flex = '0 0 auto';
+    try {
+      img.src = chrome.runtime.getURL('assets/tandem-favicon-32.png');
+    } catch {
+      // ignore
+    }
+    img.addEventListener('error', () => {
+      try {
+        img.style.display = 'none';
+      } catch {
+        // ignore
+      }
+    });
+
+    const text = document.createElement('span');
+    const tandem = document.createElement('span');
+    tandem.textContent = 'Tandem';
+    tandem.style.color = '#1B5EBF';
+    tandem.style.textShadow = '0 1px 0 rgba(255,255,255,0.72), 0 0 14px rgba(27,94,191,0.22)';
+    const rest = document.createElement('span');
+    rest.textContent = ' · ';
+    rest.style.color = '#5A6A85';
+    const active = document.createElement('span');
+    active.textContent = 'active';
+    active.style.color = '#1A9A7C';
+    active.style.textShadow = '0 1px 0 rgba(255,255,255,0.72), 0 0 16px rgba(26,154,124,0.28)';
+    text.appendChild(tandem);
+    text.appendChild(rest);
+    text.appendChild(active);
+
+    btn.addEventListener(
+      'click',
+      (e) => {
+        try {
+          e.preventDefault();
+          e.stopPropagation();
+        } catch {
+          // ignore
+        }
+        try {
+          chrome.runtime.sendMessage({ type: 'OPEN_SIDE_PANEL' });
+        } catch {
+          // ignore
+        }
+      },
+      true
+    );
+
+    btn.appendChild(img);
+    btn.appendChild(text);
+    wrap.appendChild(btn);
+    root.appendChild(wrap);
+  } catch {
+    // ignore
+  }
+}
+
+// Install ASAP (safe on reinjection).
+try {
+  installCornerIndicator();
+} catch {
+  // ignore
+}
 
 function emitPageEvent(event) {
   try {

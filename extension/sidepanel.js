@@ -59,11 +59,8 @@ const el = (id) => document.getElementById(id);
 
 function setThemeFromHint(themeHint) {
   if (!themeHint) return;
-  const root = document.documentElement;
-
   // Keep a unified, predictable UI in the side panel.
-  // We only adopt the page font (optional) but do not override colors.
-  if (themeHint.fontFamily) root.style.setProperty('--ui-font', themeHint.fontFamily);
+  // We do not adopt page fonts/colors; the panel uses its own design tokens.
 }
 
 function render() {
@@ -76,31 +73,7 @@ function render() {
   const explainBtn = el('explain');
   goalEl.disabled = false;
   explainBtn.disabled = !goalEl.value.trim() || state.busy;
-  el('contextPreview').textContent = ctx
-    ? JSON.stringify(
-        {
-          headings: ctx.headings,
-          navItems: ctx.navItems,
-          navLinkCandidates: ctx.navLinkCandidates,
-          interactiveContainers: ctx.interactiveContainers,
-          navigationGroups: ctx.navigationGroups,
-          primaryActions: ctx.primaryActions,
-          primaryFields: ctx.primaryFields,
-          dropdownTriggers: ctx.dropdownTriggers,
-          openMenuGroups: ctx.openMenuGroups,
-          navGraph: ctx.navGraph,
-          walkthrough: {
-            currentStepIndex: state.currentStepIndex,
-            stepsCount: state.steps.length,
-            completed: state.walkthroughCompleted,
-            autoRefreshEnabled: state.autoRefreshEnabled,
-            trace: state.walkthroughTrace.slice(-12)
-          }
-        },
-        null,
-        2
-      )
-    : '';
+  // Context preview removed (no longer needed).
 
   const stepsEl = el('steps');
   stepsEl.innerHTML = '';

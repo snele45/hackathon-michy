@@ -6,7 +6,7 @@
   "permissions": ["sidePanel", "activeTab", "tabs", "scripting", "storage"],
   "host_permissions": ["<all_urls>"],
   "action": {
-    "default_title": "Onboarding Buddy"
+    "default_title": "Tandem"
   },
   "background": {
     "service_worker": "service-worker.js"
@@ -19,6 +19,12 @@
       "matches": ["<all_urls>"],
       "js": ["contentScript.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/*"],
+      "matches": ["<all_urls>"]
     }
   ]
 }

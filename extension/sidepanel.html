@@ -3,12 +3,26 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Onboarding Buddy</title>
+    <title>Tandem</title>
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
     <header class="header">
-      <div class="title">Onboarding Buddy</div>
+      <div class="headerTop">
+        <div class="brand">
+          <img
+            class="brandLogo"
+            src="assets/tandem-favicon-32.png"
+            alt="Tandem"
+            onerror="this.style.display='none'"
+          />
+          <div class="brandText">
+            <div class="title">Tandem</div>
+            <div class="subtitle">active</div>
+          </div>
+        </div>
+        <div class="runtimePill">running</div>
+      </div>
       <div class="subtitle" id="pageTitle">No page captured yet</div>
       <div class="subtitle" id="statusLine"></div>
     </header>
@@ -18,18 +32,17 @@
         <button id="newSession" class="btn danger">Clear context</button>
       </div>
 
-      <label class="label" for="goal">Goal</label>
+      <div class="h1" style="margin-top: 10px;">Session Goal</div>
       <div class="row inputRow">
-        <input id="goal" class="input" type="text" placeholder="e.g. Create a new customer record" />
-        <button id="explain" class="btn">Explain</button>
+        <input id="goal" class="input" type="text" aria-label="Session Goal" placeholder="e.g. Create a new customer record" />
+        <button id="explain" class="btn primary">Explain</button>
       </div>
 
       <div class="small" id="pageMeta"></div>
-      <pre class="context" id="contextPreview"></pre>
     </section>
 
     <section class="card">
-      <div class="label">Guidance</div>
+      <div class="h2">Guidance</div>
       <div class="summary" id="summary"></div>
       <div class="question" id="clarifying"></div>
 

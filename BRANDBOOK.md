@@ -1,10 +1,10 @@
-# Onboarding Buddy — Brandbook (Current Product)
+# Tandem — Brandbook (Current Product)
 
-Ovaj dokument opisuje **kako Onboarding Buddy trenutno izgleda i radi**, i služi kao vodič za **fine-tuning** (šta menjati, gde, i šta ne smemo da pokvarimo).
+Ovaj dokument opisuje **kako Tandem trenutno izgleda i radi**, i služi kao vodič za **fine-tuning** (šta menjati, gde, i šta ne smemo da pokvarimo).
 
 ## 1) Produkt u jednoj rečenici
 
-**Onboarding Buddy** je side-panel asistent za web aplikacije koji, na osnovu **svežeg DOM snapshot-a + screenshot-a**, vraća **tačno jedan sledeći korak** i **naglašava** (highlight) element koji korisnik treba da klikne/selektuje/popuni.
+**Tandem** je side-panel asistent za web aplikacije koji, na osnovu **svežeg DOM snapshot-a + screenshot-a**, vraća **tačno jedan sledeći korak** i **naglašava** (highlight) element koji korisnik treba da klikne/selektuje/popuni.
 
 ## 2) Produktni principi (non‑negotiables)
 
@@ -22,6 +22,35 @@ Ovaj dokument opisuje **kako Onboarding Buddy trenutno izgleda i radi**, i služ
 - **Bez viška teksta**: sve bitno je u `steps[0].details` (≤ 400), `currentStepHelp` minimalan.
 
 ## 4) Vizuelni identitet (Side Panel UI)
+
+### 4.0 Color system (Tandem)
+
+- Navy `#0F2153`
+- Blue `#1B5EBF`
+- Blue Mid `#2B7DD4`
+- Blue Light `#5BA8F0`
+- Teal `#0E6B5A`
+- Teal Mid `#1A9A7C`
+- Teal Light `#3DBFA0`
+- Danger `#C13030`
+
+CSS var mapping (u [extension/sidepanel.css](extension/sidepanel.css)):
+
+- `--ui-bg`: `#F7F9FC`
+- `--ui-card`: `#FFFFFF`
+- `--ui-fg`: `#0F2153`
+- `--ui-muted`: `#5A6A85`
+- `--ui-border`: `rgba(27,94,191,0.14)`
+- `--ui-accent`: `#1B5EBF`
+- `--ui-accent-2`: `#1A9A7C`
+- `--ui-accent-bg`: `rgba(27,94,191,0.07)`
+- `--ui-danger`: `#C13030`
+- `--ui-font`: `'DM Sans', system-ui, sans-serif`
+
+Typography:
+
+- H1: 20px ("Session Goal")
+- H2: 14px ("Guidance")
 
 ### 4.1 Layout
 Side panel je minimalistički “tooling UI”: header + dve kartice.
@@ -125,7 +154,31 @@ Ovo omogućava da prompt “turn fan on” pouzdano navede model na taj element 
 Relevantno:
 - [extension/contentScript.js](extension/contentScript.js)
 
-## 8) AI output contract (server enforcement)
+## 8) Corner indicator (Injected UI)
+
+Tandem injektuje mali indikator u **donji desni ugao** stranice:
+
+- Text: `Tandem · active`
+- Klik: otvara side panel
+- Ikonica: koristi favicon iz extension asset-a
+
+Relevantno:
+- [extension/contentScript.js](extension/contentScript.js)
+- [extension/service-worker.js](extension/service-worker.js)
+
+### 8.1 Gde staviti favicon/logo fajlove
+
+Pošto injektovani UI živi u kontekstu stranice, asset mora biti dostupan kao `web_accessible_resource`.
+
+Stavi fajlove ovde:
+
+- [extension/assets/](extension/assets/)
+  - `tandem-favicon-32.png` (koristi se u corner indikatoru i u header-u sidepanel-a)
+  - (opciono) `tandem-logo.png` ako želiš veći logo za panel/header
+
+Napomena: ako fajl ne postoji, UI će raditi i bez ikonice (ikonica će se samo sakriti).
+
+## 9) AI output contract (server enforcement)
 
 Server u [server/index.js](server/index.js) enforce-uje:
 
@@ -140,7 +193,7 @@ Server u [server/index.js](server/index.js) enforce-uje:
 - temperature / max tokens
 - retry uslovi (repeat step, details over limit)
 
-## 9) Observability (Logovi)
+## 10) Observability (Logovi)
 
 Server loguje JSON linije (stdout) koje omogućavaju rekonstrukciju toka:
 
@@ -153,7 +206,7 @@ Server loguje JSON linije (stdout) koje omogućavaju rekonstrukciju toka:
 Relevantno:
 - [server/index.js](server/index.js)
 
-## 10) Fine-tuning mapa (Šta menjati gde)
+## 11) Fine-tuning mapa (Šta menjati gde)
 
 ### 10.1 Ako želiš drugačiji “brand” UI
 - Tokene i komponente: [extension/sidepanel.css](extension/sidepanel.css)
@@ -169,7 +222,7 @@ Relevantno:
 ### 10.4 Ako želiš promeniti “šta je memorija”
 - Session scoping + vector/KG: [server/memoryStore.js](server/memoryStore.js)
 
-## 11) Checklist (pre demo / pre release)
+## 12) Checklist (pre demo / pre release)
 
 - [ ] Highlight uvek iznad svega (test na stranicama sa modals/sidebars)
 - [ ] “turn fan on” vraća step sa `actionId = ob_fan`

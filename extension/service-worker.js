@@ -67,6 +67,15 @@ async function storageGet(keys) {
   }
 }
 
+async function storageRemove(keys) {
+  try {
+    if (chrome.storage?.session) return await chrome.storage.session.remove(keys);
+    return await chrome.storage.local.remove(keys);
+  } catch {
+    // ignore
+  }
+}
+
 async function appendRecentEvent(tabId, event) {
   const key = `recentEvents:${tabId}`;
   const current = recentEventsByTab.get(tabId);
@@ -137,6 +146,22 @@ async function appendNavEdge(tabId, event) {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {
+      if (msg?.type === 'OPEN_SIDE_PANEL') {
+        const tabId = _sender?.tab?.id;
+        if (!tabId) {
+          sendResponse({ ok: false, error: 'Missing sender tab.' });
+          return;
+        }
+        try {
+          await chrome.sidePanel.open({ tabId });
+          sendResponse({ ok: true });
+          return;
+        } catch (e) {
+          sendResponse({ ok: false, error: e?.message || 'Failed to open side panel.' });
+          return;
+        }
+      }
+
       if (msg?.type === 'PAGE_EVENT') {
         const tabId = _sender?.tab?.id;
         if (!tabId) {
