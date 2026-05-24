@@ -38,6 +38,11 @@ let state = {
     postSig: null,
     postSvgSig: null,
     successKind: null
+  },
+  ui: {
+    thinkingStack: [],
+    thinking: false,
+    thinkingText: ''
   }
 };
 
@@ -70,6 +75,37 @@ function schedulePostProgressRefresh(seq) {
 
 const el = (id) => document.getElementById(id);
 
+function setThinkingFromStack() {
+  const stack = Array.isArray(state.ui?.thinkingStack) ? state.ui.thinkingStack : [];
+  const top = stack.length ? stack[stack.length - 1] : '';
+  state.ui.thinking = Boolean(top);
+  state.ui.thinkingText = top || '';
+}
+
+function beginThinking(text) {
+  const t = (text || '').toString().trim();
+  if (!Array.isArray(state.ui.thinkingStack)) state.ui.thinkingStack = [];
+  state.ui.thinkingStack.push(t || state.ui.thinkingText || 'Working…');
+  setThinkingFromStack();
+  render();
+}
+
+function endThinking() {
+  if (!Array.isArray(state.ui?.thinkingStack)) state.ui.thinkingStack = [];
+  if (state.ui.thinkingStack.length) state.ui.thinkingStack.pop();
+  setThinkingFromStack();
+  render();
+}
+
+async function withThinking(text, fn) {
+  beginThinking(text);
+  try {
+    return await fn();
+  } finally {
+    endThinking();
+  }
+}
+
 function setThemeFromHint(themeHint) {
   if (!themeHint) return;
   // Keep a unified, predictable UI in the side panel.
@@ -81,11 +117,21 @@ function render() {
   el('pageTitle').textContent = ctx?.title || 'No page captured yet';
   el('pageMeta').textContent = ctx?.url ? ctx.url : '';
 
+  const thinkingEl = el('thinking');
+  const thinkingTextEl = el('thinkingText');
+  const thinking = Boolean(state.ui?.thinking || state.busy);
+  if (thinkingEl) thinkingEl.style.display = thinking ? 'flex' : 'none';
+  if (thinkingTextEl) thinkingTextEl.textContent = (state.ui?.thinkingText || 'Thinking about the next step…').toString();
+
+  const uiLocked = Boolean(state.busy || thinking);
+
   // Simple flow: allow typing a goal anytime; Explain will auto-capture context.
   const goalEl = el('goal');
   const explainBtn = el('explain');
-  goalEl.disabled = false;
-  explainBtn.disabled = !goalEl.value.trim() || state.busy;
+  goalEl.disabled = uiLocked;
+  explainBtn.disabled = !goalEl.value.trim() || uiLocked;
+  const newSessionBtn = el('newSession');
+  if (newSessionBtn) newSessionBtn.disabled = uiLocked;
   // Context preview removed (no longer needed).
 
   const stepsEl = el('steps');
@@ -113,11 +159,13 @@ function render() {
       preview.type = 'button';
       preview.className = 'actionPreview';
       preview.textContent = actionLabel || actionId;
+      preview.disabled = uiLocked;
 
       const candidate = findActionCandidate(actionLabel);
       applyPreviewStyle(preview, candidate);
 
       preview.addEventListener('click', async () => {
+        if (uiLocked) return;
         setStatus('');
         try {
           const r = await chrome.runtime.sendMessage({
@@ -154,16 +202,19 @@ function render() {
 
         const hint = document.createElement('div');
         hint.className = 'hintPill';
-        hint.textContent = 'Pick target to locate';
+        hint.textContent = 'Click button to preview';
         meta.appendChild(hint);
 
-        for (const sug of suggestions) {
+        const renderSuggestionBtn = (sug) => {
+          if (!sug?.label) return;
           const btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'actionPreview secondary';
           btn.textContent = sug.label;
+          btn.disabled = uiLocked;
           if (sug?.style) applyPreviewStyle(btn, { style: sug.style });
           btn.addEventListener('click', async () => {
+            if (uiLocked) return;
             setStatus('');
             // Persist the chosen target so progress detection becomes deterministic.
             const next = {
@@ -191,7 +242,10 @@ function render() {
             }
           });
           meta.appendChild(btn);
-        }
+        };
+
+        // IMPORTANT: show exactly one suggestion.
+        renderSuggestionBtn(suggestions[0]);
 
         li.appendChild(meta);
       }
@@ -210,13 +264,13 @@ function render() {
   if (doneBtn) doneBtn.style.display = awaitingFinal ? 'none' : '';
   const hasSteps = state.steps.length > 0;
   if (doneBtn) {
-    doneBtn.disabled = !hasSteps || state.walkthroughCompleted;
+    doneBtn.disabled = uiLocked || !hasSteps || state.walkthroughCompleted;
     doneBtn.textContent = state.walkthroughCompleted ? 'Completed' : 'Done';
     doneBtn.classList.toggle('primary', hasSteps && !state.walkthroughCompleted);
   }
 
-  if (finalYes) finalYes.disabled = !awaitingFinal || state.busy;
-  if (finalNo) finalNo.disabled = !awaitingFinal || state.busy;
+  if (finalYes) finalYes.disabled = uiLocked || !awaitingFinal;
+  if (finalNo) finalNo.disabled = uiLocked || !awaitingFinal;
 }
 
 function tracePush(entry) {
@@ -303,6 +357,24 @@ function isSameLabel(a, b) {
   const aa = normalizeKey(a);
   const bb = normalizeKey(b);
   return Boolean(aa && bb && aa === bb);
+}
+
+function overlayOpen(ctx) {
+  const overlays = Array.isArray(ctx?.activeOverlays) ? ctx.activeOverlays : [];
+  if (overlays.length) return true;
+  const overlayActions = Array.isArray(ctx?.overlayActions) ? ctx.overlayActions : [];
+  return overlayActions.length > 0;
+}
+
+function labelIsOverlayOption(ctx, label) {
+  const k = normalizeKey(label);
+  if (!k) return false;
+  const overlayActions = Array.isArray(ctx?.overlayActions) ? ctx.overlayActions : [];
+  for (const a of overlayActions) {
+    if (!a) continue;
+    if (normalizeKey(a.label || '') === k) return true;
+  }
+  return false;
 }
 
 function findUiActionSnapshotForStep(ctx, step) {
@@ -680,7 +752,7 @@ function findTargetSuggestions(step, ctx) {
     })
     .filter((x) => x.label && x.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 5);
+    .slice(0, 1);
 
   // If the model didn't mention anything we can score, still offer explicit tokens.
   if (!scored.length && explicit.length) {
@@ -694,7 +766,7 @@ function findTargetSuggestions(step, ctx) {
         style: styleByLabel.get(normalizeKey(label)) || null,
         score: 1
       });
-      if (fallback.length >= 4) break;
+      if (fallback.length >= 1) break;
     }
     return fallback;
   }
@@ -785,8 +857,9 @@ function applyPreviewStyle(buttonEl, candidate) {
 }
 
 async function captureContext({ statusText } = {}) {
-  if (typeof statusText === 'string') setStatus(statusText);
-  const result = await chrome.runtime.sendMessage({ type: 'CAPTURE_CONTEXT', includeScreenshot: true });
+  return await withThinking(typeof statusText === 'string' && statusText ? statusText : 'Capturing page context…', async () => {
+    if (typeof statusText === 'string') setStatus(statusText);
+    const result = await chrome.runtime.sendMessage({ type: 'CAPTURE_CONTEXT', includeScreenshot: true });
   if (!result?.ok) {
     setStatus(result?.error || 'Failed to capture context.');
     return;
@@ -832,6 +905,7 @@ async function captureContext({ statusText } = {}) {
   setThemeFromHint(state.context?.themeHint);
   tracePush({ type: 'context_captured', url: state.context?.url || null });
   render();
+  });
 }
 
 async function explainNextStep() {
@@ -875,10 +949,12 @@ async function explainNextStep() {
     session: state.session
   };
 
-  const resp = await fetch(`${state.backendUrl}/api/explain`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+  const resp = await withThinking('Thinking…', async () => {
+    return await fetch(`${state.backendUrl}/api/explain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
   });
 
   if (!resp.ok) {
@@ -950,10 +1026,12 @@ async function refreshCurrentStepHelp({ reason }) {
       session: state.session
     };
 
-    const resp = await fetch(`${state.backendUrl}/api/explain`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+    const resp = await withThinking('Thinking…', async () => {
+      return await fetch(`${state.backendUrl}/api/explain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
     });
 
     if (!resp.ok) return;
@@ -1108,6 +1186,17 @@ async function handlePageEvent(event) {
 
   // If the user just executed the final step, stop auto-refresh and ask for confirmation.
   if (matchedExpected && currentStep?.isFinalStep === true) {
+    // If that click simply opened a popup/overlay, it's usually not the real "final" action.
+    // In that case, immediately refresh guidance to propose the next overlay option (e.g. Run).
+    if (overlayOpen(state.context) && !labelIsOverlayOption(state.context, expected)) {
+      state.history.push({ at: Date.now(), type: eventType, label: clickedLabel, matchedStep: state.currentStepIndex });
+      tracePush({ type: `final_flag_overridden_overlay_open_by_${eventType}`, stepIndex: state.currentStepIndex, actionLabel: expected });
+      setStatus('');
+      await refreshCurrentStepHelp({ reason: 'overlay_opened' });
+      schedulePostProgressRefresh(event?.seq);
+      return;
+    }
+
     // Compute success heuristics from before/after signatures.
     const post = findUiActionSnapshotForStep(state.context, currentStep);
     state.final.postSig = typeof post?.sig === 'string' ? post.sig : null;
@@ -1126,7 +1215,7 @@ async function handlePageEvent(event) {
       state.busy = true;
       render();
       setStatus('Refreshing guidance…');
-      const data = await fetchSuggestedSteps();
+      const data = await withThinking('Refreshing guidance…', async () => await fetchSuggestedSteps());
 
       if (typeof data?.summary === 'string') el('summary').textContent = data.summary;
       const helpEl = el('currentHelp');
@@ -1141,7 +1230,7 @@ async function handlePageEvent(event) {
 
       if (followupOk) {
         setSingleStepFromResponse(data, { source: 'post_final_followup' });
-        el('clarifying').textContent = 'Do you still need my help? If not, click Done. Otherwise, follow the suggested step below.';
+        el('clarifying').textContent = 'Suggested next step:';
         setStatus('');
         tracePush({ type: 'final_followup_offered' });
         state.busy = false;

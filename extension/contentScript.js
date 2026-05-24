@@ -18,6 +18,19 @@ function isElementVisible(element) {
   return true;
 }
 
+function isTandemCornerElement(el) {
+  // Our injected floating corner indicator should never be part of DOM-based inference.
+  try {
+    if (!el) return false;
+    if (el.closest?.('[data-tandem-corner="1"]')) return true;
+    const aria = ((el.getAttribute?.('aria-label') || '') + '').toLowerCase();
+    if (aria.includes('open tandem') || aria === 'tandem') return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function areaFromRect(rect) {
   try {
     const vw = Math.max(1, window.innerWidth || 1);
@@ -443,6 +456,7 @@ function buildUiActionsAndTargets() {
   const actionIndex = new Map();
 
   for (const el of nodes) {
+    if (isTandemCornerElement(el)) continue;
     if (!isElementVisible(el)) continue;
 
     const tag = (el.tagName || '').toLowerCase();
@@ -1229,6 +1243,7 @@ function collectActionCandidates() {
   const candidates = [...document.querySelectorAll(getClickableSelectors())];
 
   for (const el of candidates.slice(0, 320)) {
+    if (isTandemCornerElement(el)) continue;
     if (!isElementVisible(el)) continue;
     const t = getVisibleActionLabel(el);
     if (!t) continue;
@@ -1283,7 +1298,9 @@ function findClickableAncestor(node) {
   if (!node) return null;
   const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
   if (!el) return null;
-  return el.closest(getClickableSelectors());
+  const hit = el.closest(getClickableSelectors());
+  if (hit && isTandemCornerElement(hit)) return null;
+  return hit;
 }
 
 function isNavContainer(el) {
@@ -1472,8 +1489,48 @@ function installCornerIndicator() {
     const root = document.documentElement || document.body;
     if (!root) return;
 
-    // Avoid duplicates if the DOM already contains it.
-    if (document.querySelector('[data-tandem-corner="1"]')) return;
+    const wireCornerButton = (btn) => {
+      try {
+        if (!btn) return;
+        if (btn.getAttribute('data-tandem-wired') === '1') return;
+        btn.setAttribute('data-tandem-wired', '1');
+        btn.addEventListener(
+          'click',
+          (e) => {
+            try {
+              e.preventDefault();
+              e.stopPropagation();
+            } catch {
+              // ignore
+            }
+            try {
+              chrome.runtime.sendMessage({ type: 'OPEN_SIDE_PANEL' }, (resp) => {
+                try {
+                  const err = chrome.runtime?.lastError;
+                  if (err) console.warn('OPEN_SIDE_PANEL lastError:', err.message || err);
+                  if (resp && resp.ok === false) console.warn('OPEN_SIDE_PANEL failed:', resp.error || resp);
+                } catch {
+                  // ignore
+                }
+              });
+            } catch {
+              // ignore
+            }
+          },
+          true
+        );
+      } catch {
+        // ignore
+      }
+    };
+
+    // Avoid duplicates if the DOM already contains it, but always re-wire click.
+    const existingWrap = document.querySelector('[data-tandem-corner="1"]');
+    if (existingWrap) {
+      const existingBtn = existingWrap.querySelector('button, [role="button"]');
+      wireCornerButton(existingBtn);
+      return;
+    }
 
     const wrap = document.createElement('div');
     wrap.setAttribute('data-tandem-corner', '1');
@@ -1535,23 +1592,7 @@ function installCornerIndicator() {
     text.appendChild(rest);
     text.appendChild(active);
 
-    btn.addEventListener(
-      'click',
-      (e) => {
-        try {
-          e.preventDefault();
-          e.stopPropagation();
-        } catch {
-          // ignore
-        }
-        try {
-          chrome.runtime.sendMessage({ type: 'OPEN_SIDE_PANEL' });
-        } catch {
-          // ignore
-        }
-      },
-      true
-    );
+    wireCornerButton(btn);
 
     btn.appendChild(img);
     btn.appendChild(text);
@@ -1584,6 +1625,7 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
     (e) => {
       const targetEl = findClickableAncestor(e.target);
       if (!targetEl) return;
+      if (isTandemCornerElement(targetEl)) return;
       if (!isElementVisible(targetEl)) return;
 
       const label = getVisibleActionLabel(targetEl).trim().replace(/\s+/g, ' ') || null;
@@ -1671,6 +1713,7 @@ if (!__obGlobal.__obState.changeListenerInstalled) {
     (e) => {
       const targetEl = e?.target;
       if (!targetEl || !(targetEl instanceof Element)) return;
+      if (isTandemCornerElement(targetEl)) return;
 
       const tag = (targetEl.tagName || '').toLowerCase();
       const type = tag === 'input' ? (targetEl.getAttribute('type') || '').toLowerCase() : '';
@@ -1727,6 +1770,7 @@ function findBestActionElementByLabel(label, options = {}) {
     const exactMatches = [];
     const partialMatches = [];
     for (const el of candidates) {
+      if (isTandemCornerElement(el)) continue;
       if (!isElementVisible(el)) continue;
       const t = getVisibleActionLabel(el).trim().replace(/\s+/g, ' ');
       if (!t) continue;
@@ -1995,6 +2039,7 @@ function findBestAnyElementByQuery(query, options = {}) {
   const textCandidates = [...document.querySelectorAll('h1,h2,h3,h4,label,legend,summary,button,a,[role="button"],[role="link"],[role="menuitem"],[role="option"],[tabindex],p,li,td,th,span,div')];
   const matches = [];
   for (const el of textCandidates.slice(0, 500)) {
+    if (isTandemCornerElement(el)) continue;
     if (!isElementVisible(el)) continue;
     const t = (el.innerText || '').replace(/\s+/g, ' ').trim();
     if (!t || t.length > 120) continue;
@@ -2195,17 +2240,35 @@ function highlightElement(element) {
 
   element.style.transition = 'outline 120ms ease-in-out, box-shadow 120ms ease-in-out, background-color 120ms ease-in-out';
 
+  const rect0 = (() => {
+    try {
+      return element.getBoundingClientRect();
+    } catch {
+      return { width: 0, height: 0 };
+    }
+  })();
+  const minSide = Math.max(0, Math.min(Number(rect0?.width) || 0, Number(rect0?.height) || 0));
+  const isSmallTarget = minSide > 0 && minSide <= 34;
+  const outlineWidth = isSmallTarget ? 3 : 4;
+  const outlineOffset = isSmallTarget ? 2 : 4;
+  const ringBorder = isSmallTarget ? 3 : 5;
+  const glowWidth = isSmallTarget ? 6 : 9;
+  const glowRing = isSmallTarget ? 6 : 10;
+  const ringRadius = isSmallTarget ? 6 : 8;
+
   // Fallback highlight directly on the element (in case overlay cannot render).
   try {
     if (!element.style.position) element.style.position = 'relative';
     element.style.setProperty('z-index', '2147483646', 'important');
-    element.style.setProperty('outline', `6px solid ${RED}`, 'important');
-    element.style.setProperty('outline-offset', '8px', 'important');
+    element.style.setProperty('outline', `${outlineWidth}px solid ${RED}`, 'important');
+    element.style.setProperty('outline-offset', `${outlineOffset}px`, 'important');
     element.style.setProperty('background-color', RED_SOFT, 'important');
+    element.style.setProperty('box-shadow', `0 0 0 ${glowWidth}px ${RED_SOFT}`, 'important');
   } catch {
-    element.style.outline = `6px solid ${RED}`;
-    element.style.outlineOffset = '8px';
+    element.style.outline = `${outlineWidth}px solid ${RED}`;
+    element.style.outlineOffset = `${outlineOffset}px`;
     element.style.backgroundColor = RED_SOFT;
+    element.style.boxShadow = `0 0 0 ${glowWidth}px ${RED_SOFT}`;
   }
 
   // Primary highlight: top-level fixed overlay (beats stacking contexts).
@@ -2247,13 +2310,19 @@ function highlightElement(element) {
 
       const ring = document.createElement('div');
       ring.style.position = 'fixed';
-      ring.style.left = `${left}px`;
-      ring.style.top = `${top}px`;
-      ring.style.width = `${Math.max(0, right - left)}px`;
-      ring.style.height = `${Math.max(0, bottom - top)}px`;
-      ring.style.border = `6px solid ${RED}`;
-      ring.style.borderRadius = '8px';
-      ring.style.boxShadow = `0 0 0 10px ${RED_SOFT}`;
+      const l = Math.round(left);
+      const t = Math.round(top);
+      const w = Math.round(Math.max(0, right - left));
+      const h = Math.round(Math.max(0, bottom - top));
+      ring.style.left = `${l}px`;
+      ring.style.top = `${t}px`;
+      ring.style.width = `${w}px`;
+      ring.style.height = `${h}px`;
+      const localMinSide = Math.max(0, Math.min(w, h));
+      const localSmall = localMinSide > 0 && localMinSide <= 34;
+      ring.style.border = `${localSmall ? 3 : ringBorder}px solid ${RED}`;
+      ring.style.borderRadius = `${localSmall ? 6 : ringRadius}px`;
+      ring.style.boxShadow = `0 0 0 ${localSmall ? 6 : glowRing}px ${RED_SOFT}`;
       ring.style.pointerEvents = 'none';
       overlay.appendChild(ring);
 
@@ -2378,6 +2447,7 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
           try {
             const nodes = [...document.querySelectorAll(getClickableSelectors())].slice(0, 1200);
             for (const node of nodes) {
+              if (isTandemCornerElement(node)) continue;
               if (!isElementVisible(node)) continue;
               const id = computeActionId(node);
               if (id && id === actionId) {

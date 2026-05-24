@@ -72,6 +72,44 @@ body {
   margin-top: 6px;
 }
 
+.busyIndicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--ui-border);
+  border-left: 3px solid var(--ui-accent);
+  background: var(--ui-accent-bg);
+}
+
+.busyText {
+  font-size: 13px;
+  color: var(--ui-fg);
+  font-weight: 800;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 2px solid rgba(27, 94, 191, 0.22);
+  border-top-color: var(--ui-accent);
+  animation: spin 0.9s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .card {
   border: 1px solid var(--ui-border);
   background: var(--ui-card);
