@@ -299,8 +299,56 @@ function applyPreviewStyle(buttonEl, candidate) {
   const style = candidate?.style;
   if (!style) return;
 
-  if (style.backgroundColor) buttonEl.style.backgroundColor = style.backgroundColor;
-  if (style.color) buttonEl.style.color = style.color;
+  const fg = typeof style.color === 'string' ? style.color.trim() : '';
+  const bg = typeof style.backgroundColor === 'string' ? style.backgroundColor.trim() : '';
+
+  const isTransparentColor = (c) => {
+    const s = (c || '').toString().trim().toLowerCase();
+    if (!s) return true;
+    if (s === 'transparent') return true;
+    const m = s.match(/^rgba\((\d+),\s*(\d+),\s*(\d+),\s*([0-9.]+)\)$/);
+    if (m) {
+      const a = Number.parseFloat(m[4]);
+      return Number.isFinite(a) ? a <= 0.03 : false;
+    }
+    return false;
+  };
+
+  const parseRgb = (c) => {
+    const s = (c || '').toString().trim().toLowerCase();
+    let m = s.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/);
+    if (m) return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
+    m = s.match(/^rgba\((\d+),\s*(\d+),\s*(\d+),\s*([0-9.]+)\)$/);
+    if (m) return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
+    m = s.match(/^#([0-9a-f]{6})$/i);
+    if (m) {
+      const hex = m[1];
+      return {
+        r: Number.parseInt(hex.slice(0, 2), 16),
+        g: Number.parseInt(hex.slice(2, 4), 16),
+        b: Number.parseInt(hex.slice(4, 6), 16)
+      };
+    }
+    return null;
+  };
+
+  const isDark = (c) => {
+    const rgb = parseRgb(c);
+    if (!rgb) return false;
+    // Relative luminance-ish.
+    const l = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+    return l < 0.56;
+  };
+
+  const hasFg = Boolean(fg);
+  const hasBg = Boolean(bg) && !isTransparentColor(bg);
+
+  // If we can't replicate background (e.g. link-like element with transparent bg), keep the default Tandem pill.
+  if (!hasBg) return;
+
+  if (hasBg) buttonEl.style.backgroundColor = bg;
+  if (hasFg) buttonEl.style.color = fg;
+  if (hasBg && !hasFg) buttonEl.style.color = isDark(bg) ? '#ffffff' : 'var(--ui-fg)';
 
   if (style.borderWidth && style.borderStyle && style.borderColor) {
     buttonEl.style.border = `${style.borderWidth} ${style.borderStyle} ${style.borderColor}`;
