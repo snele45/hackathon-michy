@@ -13,6 +13,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const OPENAI_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
 const MEMORY_MAX_DOCS = Number.parseInt(process.env.MEMORY_MAX_DOCS || '250', 10);
+const MEMORY_DISABLED = /^(1|true|yes|on)$/i.test(String(process.env.MEMORY_DISABLED || '').trim());
 
 const client = OPENAI_API_KEY
   ? new OpenAI({
@@ -46,10 +47,14 @@ function logEvent(event, data) {
   }
 }
 
-const memoryStorePromise = MemoryStore.load({
-  filePath: defaultMemoryFilePath(),
-  maxDocs: Number.isFinite(MEMORY_MAX_DOCS) ? MEMORY_MAX_DOCS : 250
-});
+const MEMORY_FILE_PATH = process.env.MEMORY_FILE_PATH || defaultMemoryFilePath();
+
+const memoryStorePromise = MEMORY_DISABLED
+  ? Promise.resolve(null)
+  : MemoryStore.load({
+      filePath: MEMORY_FILE_PATH,
+      maxDocs: Number.isFinite(MEMORY_MAX_DOCS) ? MEMORY_MAX_DOCS : 250
+    });
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -441,8 +446,26 @@ app.post('/api/explain', async (req, res) => {
             .slice(-10)
             .map((e) => ({
               at: e?.at || null,
+              eventType: typeof e?.eventType === 'string' ? e.eventType.slice(0, 16) : null,
               kind: e?.kind || null,
               label: typeof e?.label === 'string' ? e.label.slice(0, 80) : null,
+              actionId: typeof e?.actionId === 'string' ? e.actionId.slice(0, 120) : null,
+              domChange:
+                e?.domChange && typeof e.domChange === 'object'
+                  ? {
+                      childList: Number.isFinite(e.domChange.childList) ? e.domChange.childList : null,
+                      attrs: Number.isFinite(e.domChange.attrs) ? e.domChange.attrs : null,
+                      text: Number.isFinite(e.domChange.text) ? e.domChange.text : null
+                    }
+                  : null,
+              cause:
+                e?.cause && typeof e.cause === 'object'
+                  ? {
+                      label: typeof e.cause.label === 'string' ? e.cause.label.slice(0, 80) : null,
+                      actionId: typeof e.cause.actionId === 'string' ? e.cause.actionId.slice(0, 120) : null,
+                      kind: typeof e.cause.kind === 'string' ? e.cause.kind.slice(0, 30) : null
+                    }
+                  : null,
               urlBefore: typeof e?.urlBefore === 'string' ? e.urlBefore.slice(0, 300) : null,
               urlAfter: typeof e?.urlAfter === 'string' ? e.urlAfter.slice(0, 300) : null
             }))
@@ -539,64 +562,68 @@ app.post('/api/explain', async (req, res) => {
     // ---- Knowledge Graph + Vector DB (persistent memory) ----
     let retrievedMemory = [];
     let graphNeighborhood = null;
-    try {
-      const memoryStore = await memoryStorePromise;
-      memoryStore.updateGraphFromContext({
-        url: contextForModel.url,
-        title: contextForModel.title,
-        uiActions: contextForModel.uiActions,
-        navGraph: contextForModel.navGraph,
-        recentEvents: contextForModel.recentEvents
-      });
+    if (!MEMORY_DISABLED) {
+      try {
+        const memoryStore = await memoryStorePromise;
+        if (memoryStore) {
+          memoryStore.updateGraphFromContext({
+            url: contextForModel.url,
+            title: contextForModel.title,
+            uiActions: contextForModel.uiActions,
+            navGraph: contextForModel.navGraph,
+            recentEvents: contextForModel.recentEvents
+          });
 
-      graphNeighborhood = memoryStore.getGraphNeighborhood({ url: contextForModel.url, maxEdges: 18 });
+          graphNeighborhood = memoryStore.getGraphNeighborhood({ url: contextForModel.url, maxEdges: 18 });
 
-      const docs = buildMemoryDocuments({
-        goal: workflowState.goal,
-        url: workflowState.url,
-        uiActions: contextForModel.uiActions,
-        previousStep,
-        returnedStep: null,
-        sessionKey
-      });
+          const docs = buildMemoryDocuments({
+            goal: workflowState.goal,
+            url: workflowState.url,
+            uiActions: contextForModel.uiActions,
+            previousStep,
+            returnedStep: null,
+            sessionKey
+          });
 
-      // Store a small slice of semantic extraction results.
-      await memoryStore.upsertDocuments({
-        client,
-        embeddingModel: OPENAI_EMBEDDING_MODEL,
-        documents: docs
-      });
+          // Store a small slice of semantic extraction results.
+          await memoryStore.upsertDocuments({
+            client,
+            embeddingModel: OPENAI_EMBEDDING_MODEL,
+            documents: docs
+          });
 
-      const headingsText = Array.isArray(contextForModel.headings) ? contextForModel.headings.slice(0, 8).join(' | ') : '';
-      const queryText = [
-        `Goal: ${workflowState.goal}`,
-        `URL: ${workflowState.url || ''}`,
-        `Title: ${workflowState.title || ''}`,
-        `Reason: ${workflowState.reason}`,
-        `Headings: ${headingsText}`
-      ].join('\n');
+          const headingsText = Array.isArray(contextForModel.headings) ? contextForModel.headings.slice(0, 8).join(' | ') : '';
+          const queryText = [
+            `Goal: ${workflowState.goal}`,
+            `URL: ${workflowState.url || ''}`,
+            `Title: ${workflowState.title || ''}`,
+            `Reason: ${workflowState.reason}`,
+            `Headings: ${headingsText}`
+          ].join('\n');
 
-      retrievedMemory = await memoryStore.querySimilar({
-        client,
-        embeddingModel: OPENAI_EMBEDDING_MODEL,
-        queryText,
-        hostHint: null,
-        sessionKey,
-        topK: 6
-      });
+          retrievedMemory = await memoryStore.querySimilar({
+            client,
+            embeddingModel: OPENAI_EMBEDDING_MODEL,
+            queryText,
+            hostHint: null,
+            sessionKey,
+            topK: 6
+          });
 
-      logEvent('memory_retrieved', {
-        reqId,
-        sessionKey,
-        retrieved: Array.isArray(retrievedMemory) ? retrievedMemory.length : 0,
-        hasGraphNeighborhood: Boolean(graphNeighborhood)
-      });
+          logEvent('memory_retrieved', {
+            reqId,
+            sessionKey,
+            retrieved: Array.isArray(retrievedMemory) ? retrievedMemory.length : 0,
+            hasGraphNeighborhood: Boolean(graphNeighborhood)
+          });
 
-      await memoryStore.save();
-    } catch (e) {
-      // Memory is best-effort; never block the main guidance.
-      retrievedMemory = [];
-      graphNeighborhood = null;
+          await memoryStore.save();
+        }
+      } catch (e) {
+        // Memory is best-effort; never block the main guidance.
+        retrievedMemory = [];
+        graphNeighborhood = null;
+      }
     }
 
     const prompt = [
@@ -610,13 +637,12 @@ app.post('/api/explain', async (req, res) => {
       '- HARD LIMIT: steps[0].details MUST be <= 400 characters. Do not exceed this; optimize wording to fit.',
       '- details should include: (1) what to click/type, (2) where it is (area/nearby labels), (3) what success looks like, and (4) one short fallback if the UI differs.',
       '- Prefer referencing common UI affordances: menus, tabs, buttons, search boxes, forms.',
-      '- Use the Goal text to choose the most relevant actions from Context.primaryActions (e.g., if goal mentions Instagram/social media/templates, prefer matching visible labels like "Templates" or "Social media See all" if present).',
+      '- Use the Goal text to choose the most relevant actions from Context.primaryActions (prefer visible labels that closely match goal keywords).',
       '- If Context.openMenuGroups includes visible items (dropdown/menu options), prefer selecting an actionLabel from those items when guiding through submenus.',
       '- Prefer selecting navigation/sidebar items from Context.navItems / Context.navigationGroups for section changes (this is usually the start of a walkthrough).',
-      '- If the goal is about email/inbox/unread and Context.navItems includes "Mailbox", choose "Mailbox" as the next click.',
-      '- If the goal mentions a specific repository/project name and Context.navLinkCandidates includes a link with that exact label (or very close), choose that as the next click (do NOT suggest profile editing).',
-      '- If on GitHub and the goal is about branches: first navigate to the repository page, then guide to its Branches view (often visible as a "Branches" link or by URL ending with "/branches").',
-      '- If Context.recentEvents show recent interactions (click/change), use that to infer progress and suggest what to do next.',
+      '- If the goal mentions a specific project/repository/entity name and Context.navLinkCandidates includes a link with that exact (or very close) visible label, prefer that link rather than generic account/profile areas.',
+      '- If the page host suggests a known app/workflow and Retrieved memory / Graph neighborhood includes a similar path, you may use it as a hint ONLY if it matches the current Context (do not invent UI).',
+      '- If Context.recentEvents show recent interactions (click/change/dom), use that to infer progress and suggest what to do next. A "dom" event means the UI changed after the last click; use it as evidence of consequence/progress.',
       '- Output MUST be valid JSON only (no markdown, no prose outside JSON).',
       '',
       'Return JSON schema:',
@@ -858,25 +884,29 @@ app.post('/api/explain', async (req, res) => {
     }
 
     // Persist the returned step into memory (KG/VDB) so future retrieval can use it.
-    try {
-      const memoryStore = await memoryStorePromise;
-      const returnedStep = Array.isArray(data?.steps) && data.steps.length ? data.steps[0] : null;
-      const docs = buildMemoryDocuments({
-        goal: workflowState.goal,
-        url: workflowState.url,
-        uiActions: contextForModel.uiActions,
-        previousStep,
-        returnedStep,
-        sessionKey
-      });
-      await memoryStore.upsertDocuments({
-        client,
-        embeddingModel: OPENAI_EMBEDDING_MODEL,
-        documents: docs
-      });
-      await memoryStore.save();
-    } catch {
-      // best-effort
+    if (!MEMORY_DISABLED) {
+      try {
+        const memoryStore = await memoryStorePromise;
+        if (memoryStore) {
+          const returnedStep = Array.isArray(data?.steps) && data.steps.length ? data.steps[0] : null;
+          const docs = buildMemoryDocuments({
+            goal: workflowState.goal,
+            url: workflowState.url,
+            uiActions: contextForModel.uiActions,
+            previousStep,
+            returnedStep,
+            sessionKey
+          });
+          await memoryStore.upsertDocuments({
+            client,
+            embeddingModel: OPENAI_EMBEDDING_MODEL,
+            documents: docs
+          });
+          await memoryStore.save();
+        }
+      } catch {
+        // best-effort
+      }
     }
 
     const returned0 = Array.isArray(data?.steps) && data.steps.length ? data.steps[0] : null;
@@ -899,9 +929,13 @@ app.post('/api/explain', async (req, res) => {
 
 app.post('/api/session/end', async (req, res) => {
   try {
+    if (MEMORY_DISABLED) {
+      return res.json({ ok: true, removed: 0, disabled: true });
+    }
     const { session, url } = req.body || {};
     const sessionKey = computeSessionKey({ session, url });
     const memoryStore = await memoryStorePromise;
+    if (!memoryStore) return res.json({ ok: true, removed: 0, disabled: true });
     const result = memoryStore.clearVectorForSession(sessionKey);
     await memoryStore.save();
     logEvent('session_end', { sessionKey, removed: result?.removed ?? 0 });
@@ -915,9 +949,13 @@ app.post('/api/session/end', async (req, res) => {
 // Backwards-compatible alias (no longer wipes graph).
 app.post('/api/reset', async (req, res) => {
   try {
+    if (MEMORY_DISABLED) {
+      return res.json({ ok: true, removed: 0, disabled: true });
+    }
     const { session, url } = req.body || {};
     const sessionKey = computeSessionKey({ session, url });
     const memoryStore = await memoryStorePromise;
+    if (!memoryStore) return res.json({ ok: true, removed: 0, disabled: true });
     const result = memoryStore.clearVectorForSession(sessionKey);
     await memoryStore.save();
     logEvent('reset_alias_session_end', { sessionKey, removed: result?.removed ?? 0 });

@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -62,6 +62,7 @@ export class MemoryStore {
   constructor({ filePath, maxDocs }) {
     this.filePath = filePath;
     this.maxDocs = maxDocs;
+    this._saveChain = Promise.resolve();
     this.data = {
       version: 1,
       updatedAt: nowIso(),
@@ -97,8 +98,22 @@ export class MemoryStore {
   }
 
   async save() {
-    this.data.updatedAt = nowIso();
-    await writeFile(this.filePath, JSON.stringify(this.data, null, 2), 'utf8');
+    // Serialize saves to avoid overlapping writes from concurrent requests.
+    this._saveChain = this._saveChain.then(async () => {
+      this.data.updatedAt = nowIso();
+
+      // Ensure the directory exists (important on fresh deployments / mounted volumes).
+      const dir = dirname(this.filePath);
+      await mkdir(dir, { recursive: true });
+
+      // Atomic write to reduce risk of corrupted JSON.
+      const tmp = `${this.filePath}.tmp`;
+      const payload = JSON.stringify(this.data, null, 2);
+      await writeFile(tmp, payload, 'utf8');
+      await rename(tmp, this.filePath);
+    });
+
+    return this._saveChain;
   }
 
   // ---- Knowledge graph ----
