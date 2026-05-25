@@ -641,6 +641,7 @@ app.post('/api/explain', async (req, res) => {
       '  - If it seems relevant progress: say so briefly in summary and give the next concrete action.',
       '  - If it seems NOT relevant: say why, and suggest a correction (which nav item/menu to use).',
       '- If Reason indicates progress (e.g. "progress" or "progress_manual"), do NOT repeat the previous actionId/actionLabel; return the next distinct step.',
+      '- If Reason indicates progress but you cannot find a distinct next UI action (you would repeat the same actionId/actionLabel), treat this as likely completion: set isFinalStep=true and return a short verification step with NO actionId/actionLabel.',
       '',
       'Guidance for steps:',
       '- Set isFinalStep=true ONLY when the step you output is the last meaningful user action toward the Goal, or when the Goal already appears complete and you want the user to confirm completion.',

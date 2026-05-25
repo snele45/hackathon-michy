@@ -157,6 +157,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: true });
           return;
         } catch (e) {
+          console.warn('[Tandem] chrome.sidePanel.open failed', { tabId, error: e?.message || e });
           sendResponse({ ok: false, error: e?.message || 'Failed to open side panel.' });
           return;
         }

@@ -7,6 +7,28 @@ function pickAccentColor() {
   return null;
 }
 
+function isTandemCornerElement(el) {
+  try {
+    if (!el || !(el instanceof Element)) return false;
+    if (el.matches?.('[data-tandem-corner="1"]')) return true;
+    return Boolean(el.closest?.('[data-tandem-corner="1"]'));
+  } catch {
+    return false;
+  }
+}
+
+function isTandemInjectedElement(el) {
+  try {
+    if (!el || !(el instanceof Element)) return false;
+    if (isTandemCornerElement(el)) return true;
+    if (el.matches?.('[data-ob-highlight]')) return true;
+    if (el.closest?.('[data-ob-highlight]')) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function isElementVisible(element) {
   if (!element) return false;
   const style = getComputedStyle(element);
@@ -266,6 +288,7 @@ function buildUiActionsAndTargets() {
   const actionIndex = new Map();
 
   for (const el of nodes) {
+    if (isTandemInjectedElement(el)) continue;
     if (!isElementVisible(el)) continue;
 
     const tag = (el.tagName || '').toLowerCase();
@@ -497,6 +520,7 @@ function collectNavigationGroups() {
     const items = [];
     const nodes = [...container.querySelectorAll(getClickableSelectors())].slice(0, 220);
     for (const node of nodes) {
+      if (isTandemInjectedElement(node)) continue;
       if (!isElementVisible(node)) continue;
       const t = getVisibleActionLabel(node).replace(/\s+/g, ' ').trim();
       if (!t) continue;
@@ -566,6 +590,7 @@ function collectNavLinkCandidates() {
     const area = areaHintForElement(container);
     const anchors = [...container.querySelectorAll('a[href]')].slice(0, 220);
     for (const a of anchors) {
+      if (isTandemInjectedElement(a)) continue;
       if (!isElementVisible(a)) continue;
       const label = getVisibleActionLabel(a).replace(/\s+/g, ' ').trim();
       if (!label) continue;
@@ -726,6 +751,7 @@ function collectInteractiveContainers() {
     if (!root) continue;
     const nodes = [...root.querySelectorAll('button, a[href], input, textarea, select, [role="button"], [role="link"], [role="menuitem"], [role="option"], [data-testid], [aria-haspopup], [aria-expanded], [tabindex]')].slice(0, 1200);
     for (const el of nodes) {
+      if (isTandemInjectedElement(el)) continue;
       if (!isElementVisible(el)) continue;
 
       const tag = (el.tagName || '').toLowerCase();
@@ -735,6 +761,7 @@ function collectInteractiveContainers() {
 
       const container = nearestContainerFor(el);
       if (!container || !isElementVisible(container)) continue;
+      if (isTandemInjectedElement(container)) continue;
 
       if (seenContainers.has(container)) continue;
       seenContainers.add(container);
@@ -743,6 +770,7 @@ function collectInteractiveContainers() {
       const childControls = [];
       const childNodes = [...container.querySelectorAll('button, a[href], input, textarea, select, [role="button"], [role="link"], [role="menuitem"], [role="option"], [data-testid], [tabindex]')].slice(0, 60);
       for (const child of childNodes) {
+        if (isTandemInjectedElement(child)) continue;
         if (!isElementVisible(child)) continue;
         const ctag = (child.tagName || '').toLowerCase();
         const cIsField = ctag === 'input' || ctag === 'textarea' || ctag === 'select' || child.getAttribute('contenteditable') === 'true';
@@ -781,18 +809,21 @@ function collectInteractiveContainers() {
       const limit = Math.min(divs.length || 0, MAX_DIV_SCAN);
       for (let i = 0; i < limit; i++) {
         const d = divs[i];
+        if (isTandemInjectedElement(d)) continue;
         if (!d || !isElementVisible(d)) continue;
         const hit = buttonishRegexHit(d);
         if (!hit && !isButtonLike(d)) continue;
 
         const container = nearestContainerFor(d);
         if (!container || !isElementVisible(container)) continue;
+        if (isTandemInjectedElement(container)) continue;
         if (seenContainers.has(container)) continue;
         seenContainers.add(container);
 
         const childControls = [];
         const childNodes = [...container.querySelectorAll('button, a[href], input, textarea, select, [role="button"], [role="link"], [role="menuitem"], [role="option"], [data-testid], [tabindex], div')].slice(0, 80);
         for (const child of childNodes) {
+          if (isTandemInjectedElement(child)) continue;
           if (!isElementVisible(child)) continue;
           const ctag = (child.tagName || '').toLowerCase();
           const cIsField = ctag === 'input' || ctag === 'textarea' || ctag === 'select' || child.getAttribute('contenteditable') === 'true';
@@ -904,6 +935,7 @@ function collectFieldCandidates() {
   ];
 
   for (const el of nodes.slice(0, 260)) {
+    if (isTandemInjectedElement(el)) continue;
     if (!isElementVisible(el)) continue;
     if (!isLikelyTextField(el)) continue;
 
@@ -1042,6 +1074,7 @@ function collectActionCandidates() {
   const candidates = [...document.querySelectorAll(getClickableSelectors())];
 
   for (const el of candidates.slice(0, 320)) {
+    if (isTandemInjectedElement(el)) continue;
     if (!isElementVisible(el)) continue;
     const t = getVisibleActionLabel(el);
     if (!t) continue;
@@ -1071,6 +1104,7 @@ function collectActionCandidates() {
 function collectHeadings() {
   const hs = [...document.querySelectorAll('h1, h2')].slice(0, 20);
   return hs
+    .filter((h) => !isTandemInjectedElement(h))
     .filter((h) => isElementVisible(h))
     .map((h) => (h.innerText || '').trim())
     .filter(Boolean)
@@ -1082,6 +1116,7 @@ function collectFieldLabels() {
   const labels = [];
   const els = [...document.querySelectorAll('label')].slice(0, 80);
   for (const l of els) {
+    if (isTandemInjectedElement(l)) continue;
     if (!isElementVisible(l)) continue;
     const t = (l.innerText || '').trim();
     if (!t) continue;
@@ -1271,22 +1306,72 @@ __obGlobal.__obState = __obGlobal.__obState || {
   clickListenerInstalled: false,
   changeListenerInstalled: false,
   messageListenerInstalled: false,
-  cornerIndicatorInstalled: false,
+  cornerIndicatorObserverInstalled: false,
+  cornerPointerListenerInstalled: false,
   actionIndex: new Map(),
   lastNonClickSig: null,
   lastNonClickAt: 0
 };
 
+function tryOpenSidePanelFromCorner() {
+  try {
+    chrome.runtime.sendMessage({ type: 'OPEN_SIDE_PANEL' }, (resp) => {
+      const err = chrome.runtime.lastError;
+      if (err) {
+        console.warn('[Tandem] OPEN_SIDE_PANEL lastError:', err.message || err);
+        return;
+      }
+      if (resp && resp.ok === false) {
+        console.warn('[Tandem] OPEN_SIDE_PANEL failed:', resp.error || 'unknown error');
+      }
+    });
+  } catch (err) {
+    console.warn('[Tandem] OPEN_SIDE_PANEL exception:', err?.message || err);
+  }
+}
+
+function installCornerPointerInterceptor() {
+  try {
+    if (__obGlobal.__obState.cornerPointerListenerInstalled) return;
+    __obGlobal.__obState.cornerPointerListenerInstalled = true;
+
+    // Some sites stop propagation on document-level capture listeners,
+    // which can prevent our injected button from receiving click events.
+    // Intercept at window capture to ensure reliability.
+    window.addEventListener(
+      'pointerdown',
+      (e) => {
+        try {
+          const t = e?.target;
+          if (!t || !(t instanceof Element)) return;
+          if (!isTandemCornerElement(t)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        } catch {
+          // ignore
+        }
+        tryOpenSidePanelFromCorner();
+      },
+      true
+    );
+  } catch {
+    // ignore
+  }
+}
+
 function installCornerIndicator() {
   try {
-    if (__obGlobal.__obState.cornerIndicatorInstalled) return;
-    __obGlobal.__obState.cornerIndicatorInstalled = true;
+    const existing = document.querySelector('[data-tandem-corner="1"]');
+    if (existing) {
+      // ensure observer exists even if element already present
+    }
 
     const root = document.documentElement || document.body;
     if (!root) return;
 
     // Avoid duplicates if the DOM already contains it.
-    if (document.querySelector('[data-tandem-corner="1"]')) return;
+    if (existing) return;
 
     const wrap = document.createElement('div');
     wrap.setAttribute('data-tandem-corner', '1');
@@ -1295,6 +1380,7 @@ function installCornerIndicator() {
     wrap.style.bottom = '12px';
     wrap.style.zIndex = '2147483644';
     wrap.style.fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+    wrap.style.pointerEvents = 'auto';
 
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -1312,6 +1398,7 @@ function installCornerIndicator() {
     btn.style.cursor = 'pointer';
     btn.style.boxShadow = '0 8px 22px rgba(15,33,83,0.14), 0 0 0 4px rgba(26,154,124,0.22), 0 14px 36px rgba(26,154,124,0.22)';
     btn.style.userSelect = 'none';
+    btn.style.pointerEvents = 'auto';
 
     const img = document.createElement('img');
     img.alt = '';
@@ -1357,11 +1444,7 @@ function installCornerIndicator() {
         } catch {
           // ignore
         }
-        try {
-          chrome.runtime.sendMessage({ type: 'OPEN_SIDE_PANEL' });
-        } catch {
-          // ignore
-        }
+        tryOpenSidePanelFromCorner();
       },
       true
     );
@@ -1375,9 +1458,42 @@ function installCornerIndicator() {
   }
 }
 
+function ensureCornerIndicator() {
+  try {
+    if (!document.querySelector('[data-tandem-corner="1"]')) {
+      installCornerIndicator();
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function installCornerIndicatorObserver() {
+  try {
+    if (__obGlobal.__obState.cornerIndicatorObserverInstalled) return;
+    __obGlobal.__obState.cornerIndicatorObserverInstalled = true;
+
+    const root = document.documentElement || document.body;
+    if (!root) return;
+
+    const obs = new MutationObserver(() => {
+      // If the page removes our floating button, re-add it.
+      ensureCornerIndicator();
+    });
+    obs.observe(root, { childList: true, subtree: true });
+
+    // Also attempt once after initial paint.
+    setTimeout(() => ensureCornerIndicator(), 120);
+  } catch {
+    // ignore
+  }
+}
+
 // Install ASAP (safe on reinjection).
 try {
   installCornerIndicator();
+  installCornerPointerInterceptor();
+  installCornerIndicatorObserver();
 } catch {
   // ignore
 }
@@ -1397,6 +1513,7 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
     (e) => {
       const targetEl = findClickableAncestor(e.target);
       if (!targetEl) return;
+      if (isTandemCornerElement(targetEl)) return;
       if (!isElementVisible(targetEl)) return;
 
       const label = getVisibleActionLabel(targetEl).trim().replace(/\s+/g, ' ') || null;
@@ -1524,13 +1641,26 @@ function findBestActionElementByLabel(label, options = {}) {
 
   const hintText = options?.hintText || '';
 
-  const candidates = [...document.querySelectorAll(getClickableSelectors())];
+  const overlayRoots = findVisibleOverlayRoots(4);
+  const overlayCandidates = [];
+  for (const root of overlayRoots) {
+    try {
+      overlayCandidates.push(...root.querySelectorAll(getClickableSelectors()));
+    } catch {
+      // ignore
+    }
+  }
+
+  const candidates = overlayCandidates.length
+    ? overlayCandidates
+    : [...document.querySelectorAll(getClickableSelectors())];
 
   const normalizedTarget = target.toLowerCase();
 
   const exactMatches = [];
   const partialMatches = [];
   for (const el of candidates) {
+    if (isTandemInjectedElement(el)) continue;
     if (!isElementVisible(el)) continue;
     const t = getVisibleActionLabel(el).trim().replace(/\s+/g, ' ');
     if (!t) continue;
@@ -1586,11 +1716,24 @@ function findBestFieldElementByLabel(label, options = {}) {
   const hintText = options?.hintText || '';
   const preferredArea = inferPreferredAreaFromHint(hintText);
 
-  const candidates = [...document.querySelectorAll('input, textarea, select, [contenteditable="true"]')];
+  const overlayRoots = findVisibleOverlayRoots(4);
+  const overlayCandidates = [];
+  for (const root of overlayRoots) {
+    try {
+      overlayCandidates.push(...root.querySelectorAll('input, textarea, select, [contenteditable="true"]'));
+    } catch {
+      // ignore
+    }
+  }
+
+  const candidates = overlayCandidates.length
+    ? overlayCandidates
+    : [...document.querySelectorAll('input, textarea, select, [contenteditable="true"]')];
   let exact = null;
   const partialMatches = [];
 
   for (const el of candidates) {
+    if (isTandemInjectedElement(el)) continue;
     if (!isElementVisible(el)) continue;
     if (!isLikelyTextField(el)) continue;
     if (preferredArea) {
@@ -1685,6 +1828,7 @@ function findNearestFieldByVisibleText(labelText) {
 
   let best = null;
   for (const el of candidates.slice(0, 1800)) {
+    if (isTandemInjectedElement(el)) continue;
     if (!isElementVisible(el)) continue;
     const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
     if (!text) continue;
@@ -1779,6 +1923,7 @@ function findBestAnyElementByQuery(query, options = {}) {
   const textCandidates = [...document.querySelectorAll('h1,h2,h3,h4,label,legend,summary,button,a,[role="button"],[role="link"],[role="menuitem"],[role="option"],[tabindex],p,li,td,th,span,div')];
   const matches = [];
   for (const el of textCandidates.slice(0, 500)) {
+    if (isTandemInjectedElement(el)) continue;
     if (!isElementVisible(el)) continue;
     const t = (el.innerText || '').replace(/\s+/g, ' ').trim();
     if (!t || t.length > 120) continue;
@@ -1878,6 +2023,7 @@ function collectDropdownTriggers() {
   ];
 
   for (const el of nodes.slice(0, 240)) {
+    if (isTandemInjectedElement(el)) continue;
     if (!isElementVisible(el)) continue;
     const label = getDropdownTriggerLabel(el).replace(/\s+/g, ' ').trim();
     if (!label) continue;
@@ -1913,6 +2059,7 @@ function collectOpenMenuGroups() {
   // Pick likely containers (menu/listbox/tree/dialog) that are visible and big enough.
   const picked = [];
   for (const el of containers) {
+    if (isTandemInjectedElement(el)) continue;
     const role = el.getAttribute('role');
     if (!role || !['menu', 'listbox', 'tree', 'dialog'].includes(role)) continue;
     if (!isElementVisible(el)) continue;
@@ -1927,6 +2074,7 @@ function collectOpenMenuGroups() {
     const items = [];
     const nodes = [...container.querySelectorAll('[role="menuitem"], [role="option"], [role="treeitem"], button, a[href]')].slice(0, 80);
     for (const node of nodes) {
+      if (isTandemInjectedElement(node)) continue;
       if (!isElementVisible(node)) continue;
       const t = getVisibleActionLabel(node).replace(/\s+/g, ' ').trim();
       if (!t) continue;
@@ -1943,9 +2091,112 @@ function collectOpenMenuGroups() {
   return groups.slice(0, 6);
 }
 
+function findVisibleOverlayRoots(max = 4) {
+  try {
+    const roots = [];
+    const nodes = [
+      ...document.querySelectorAll('dialog,[role="dialog"],[role="menu"],[role="listbox"],[role="tree"]')
+    ];
+
+    for (const el of nodes.slice(0, 80)) {
+      if (!el || !(el instanceof Element)) continue;
+      if (isTandemInjectedElement(el)) continue;
+      if (!isElementVisible(el)) continue;
+      const role = (el.getAttribute('role') || '').toLowerCase();
+      const tag = (el.tagName || '').toLowerCase();
+      const kind = role || tag;
+      if (!['dialog', 'menu', 'listbox', 'tree'].includes(kind)) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 80 || rect.height < 40) continue;
+      roots.push(el);
+      if (roots.length >= max) break;
+    }
+
+    return roots;
+  } catch {
+    return [];
+  }
+}
+
+function collectActiveOverlaysAndActions() {
+  const activeOverlays = [];
+  const overlayActions = [];
+
+  const roots = findVisibleOverlayRoots(4);
+  for (const root of roots) {
+    const role = (root.getAttribute?.('role') || root.tagName || '').toString().toLowerCase();
+    const containerId = buildDomHintPath(root) || null;
+    activeOverlays.push({
+      role: role || null,
+      containerId,
+      area: areaHintForElement(root),
+      rect: rectForElement(root)
+    });
+
+    const nodes = [
+      ...root.querySelectorAll(
+        `${getClickableSelectors()}, [role="treeitem"], button, a[href], [role="button"], [role="link"], [role="menuitem"], [role="option"]`
+      )
+    ];
+    for (const el of nodes.slice(0, 180)) {
+      if (isTandemInjectedElement(el)) continue;
+      if (!isElementVisible(el)) continue;
+
+      const label = getVisibleActionLabel(el).trim().replace(/\s+/g, ' ') || null;
+      if (label && label.length > 70) continue;
+      if (label && isNoisyActionLabel(label)) continue;
+
+      const actionId = computeActionId(el);
+      if (!actionId) continue;
+
+      const { enabled } = elementEnabledState(el);
+      const sel = elementSelectionState(el);
+
+      overlayActions.push({
+        actionId,
+        label,
+        semanticType: semanticTypeForElement(el) || describeElementKind(el) || null,
+        enabled: typeof enabled === 'boolean' ? enabled : null,
+        visible: true,
+        area: areaHintForElement(el),
+        containerId,
+        overlayRole: role || null,
+        rect: rectForElement(el),
+        ...sel
+      });
+      if (overlayActions.length >= 60) break;
+    }
+
+    if (overlayActions.length >= 60) break;
+  }
+
+  return { activeOverlays: activeOverlays.slice(0, 4), overlayActions: overlayActions.slice(0, 60) };
+}
+
 function highlightElement(element) {
   if (!element) return;
-  element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+
+  // Avoid "pulling" the page/containers unless the target is actually off-screen.
+  // Also avoid smooth scrolling because it can cause the overlay to misalign while scrolling.
+  try {
+    const rect = element.getBoundingClientRect();
+    const vw = Math.max(1, window.innerWidth || 1);
+    const vh = Math.max(1, window.innerHeight || 1);
+    const margin = 16;
+    const inView =
+      rect &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      rect.top >= margin &&
+      rect.left >= margin &&
+      rect.bottom <= vh - margin &&
+      rect.right <= vw - margin;
+    if (!inView) {
+      element.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
+    }
+  } catch {
+    // ignore
+  }
 
   const RED = 'rgba(220, 38, 38, 0.98)';
   const RED_SOFT = 'rgba(220, 38, 38, 0.20)';
@@ -1979,21 +2230,35 @@ function highlightElement(element) {
 
   element.style.transition = 'outline 120ms ease-in-out, box-shadow 120ms ease-in-out, background-color 120ms ease-in-out';
 
+  const rect0 = (() => {
+    try {
+      return element.getBoundingClientRect();
+    } catch {
+      return null;
+    }
+  })();
+  const minSide = rect0 ? Math.min(rect0.width, rect0.height) : 40;
+  const thick = minSide <= 20 ? 3 : minSide <= 34 ? 4 : 5;
+  const offset = minSide <= 20 ? 4 : 6;
+  const glow = minSide <= 20 ? 7 : 9;
+
   // Fallback highlight directly on the element (in case overlay cannot render).
   try {
     if (!element.style.position) element.style.position = 'relative';
     element.style.setProperty('z-index', '2147483646', 'important');
-    element.style.setProperty('outline', `6px solid ${RED}`, 'important');
-    element.style.setProperty('outline-offset', '8px', 'important');
+    element.style.setProperty('outline', `${thick}px solid ${RED}`, 'important');
+    element.style.setProperty('outline-offset', `${offset}px`, 'important');
     element.style.setProperty('background-color', RED_SOFT, 'important');
+    element.style.setProperty('box-shadow', `0 0 0 ${glow}px ${RED_SOFT}`, 'important');
   } catch {
-    element.style.outline = `6px solid ${RED}`;
-    element.style.outlineOffset = '8px';
+    element.style.outline = `${thick}px solid ${RED}`;
+    element.style.outlineOffset = `${offset}px`;
     element.style.backgroundColor = RED_SOFT;
+    element.style.boxShadow = `0 0 0 ${glow}px ${RED_SOFT}`;
   }
 
   // Primary highlight: top-level fixed overlay (beats stacking contexts).
-  setTimeout(() => {
+  const paintOverlay = () => {
     try {
       const rect = element.getBoundingClientRect();
       const vw = Math.max(1, window.innerWidth || 1);
@@ -2035,9 +2300,9 @@ function highlightElement(element) {
       ring.style.top = `${top}px`;
       ring.style.width = `${Math.max(0, right - left)}px`;
       ring.style.height = `${Math.max(0, bottom - top)}px`;
-      ring.style.border = `6px solid ${RED}`;
+      ring.style.border = `${thick}px solid ${RED}`;
       ring.style.borderRadius = '8px';
-      ring.style.boxShadow = `0 0 0 10px ${RED_SOFT}`;
+      ring.style.boxShadow = `0 0 0 ${glow}px ${RED_SOFT}`;
       ring.style.pointerEvents = 'none';
       overlay.appendChild(ring);
 
@@ -2046,7 +2311,14 @@ function highlightElement(element) {
     } catch {
       // ignore
     }
-  }, 80);
+  };
+
+  // Wait a tick so scroll/layout settles.
+  try {
+    requestAnimationFrame(() => requestAnimationFrame(paintOverlay));
+  } catch {
+    setTimeout(paintOverlay, 0);
+  }
 
   setTimeout(() => {
     clearOverlay();
@@ -2094,6 +2366,7 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
       const navItems = collectNavItems(navigationGroups);
       const navLinkCandidates = collectNavLinkCandidates();
       const interactiveContainers = collectInteractiveContainers();
+      const { activeOverlays, overlayActions } = collectActiveOverlaysAndActions();
       const { uiActions, visualTargets, actionIndex } = buildUiActionsAndTargets();
 
       // Update index so highlight-by-actionId works.
@@ -2119,6 +2392,8 @@ if (!__obGlobal.__obState.messageListenerInstalled) {
         primaryFields: fieldCandidates.map((f) => f.label).filter(Boolean).slice(0, 20),
         dropdownTriggers,
         openMenuGroups,
+        activeOverlays,
+        overlayActions,
         uiActions,
         visualTargets,
         themeHint: getThemeHint()

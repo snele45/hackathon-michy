@@ -49,10 +49,24 @@
       <div class="stepsHeader">
         <div class="label">Steps</div>
         <div class="row">
-          <button id="done" class="btn">Complete step</button>
+          <button id="done" class="btn">Next step</button>
+          <button id="endSession" class="btn danger">End session</button>
         </div>
       </div>
+
+      <div id="thinking" class="thinking" style="display: none;">
+        <div class="spinner" aria-hidden="true"></div>
+        <div id="thinkingText" class="thinkingText">Thinking…</div>
+      </div>
       <ol class="steps" id="steps"></ol>
+
+      <div id="finalConfirm" class="finalConfirm" hidden>
+        <div id="finalPrompt" class="finalPrompt">Do you still need my help?</div>
+        <div class="row">
+          <button id="finalYes" class="btn primary">Yes</button>
+          <button id="finalNo" class="btn">No</button>
+        </div>
+      </div>
     </section>
 
     <script src="sidepanel.js"></script>
