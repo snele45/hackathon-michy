@@ -186,6 +186,99 @@ app.post('/api/explain', async (req, res) => {
       return score;
     }
 
+    function normalizeLabelForMatch(label) {
+      const raw = (label || '').toString().trim();
+      if (!raw) return '';
+      let s = raw.replace(/\s+/g, ' ').trim();
+      s = s.replace(/^["'“”]+/, '').replace(/["'“”]+$/, '').trim();
+      return s.toLowerCase();
+    }
+
+    function buildAllowedTargets({ overlayActions, uiActions }) {
+      const out = [];
+      const seen = new Set();
+
+      function push(a, { source }) {
+        if (!a || typeof a !== 'object') return;
+        const actionId = typeof a.actionId === 'string' ? a.actionId.trim().slice(0, 40) : '';
+        if (!actionId) return;
+        if (seen.has(actionId)) return;
+        seen.add(actionId);
+
+        const label = typeof a.label === 'string' ? a.label.trim().replace(/\s+/g, ' ').slice(0, 90) : null;
+        out.push({
+          actionId,
+          label,
+          semanticType: typeof a.semanticType === 'string' ? a.semanticType.slice(0, 30) : null,
+          area: a.area || null,
+          containerId: typeof a.containerId === 'string' ? a.containerId.slice(0, 120) : null,
+          overlayRole: typeof a.overlayRole === 'string' ? a.overlayRole.slice(0, 20) : null,
+          enabled: typeof a.enabled === 'boolean' ? a.enabled : null,
+          visible: typeof a.visible === 'boolean' ? a.visible : null,
+          source
+        });
+      }
+
+      const overlays = Array.isArray(overlayActions) ? overlayActions : [];
+      for (const a of overlays.slice(0, 80)) push(a, { source: 'overlay' });
+
+      const actions = Array.isArray(uiActions) ? uiActions : [];
+      for (const a of actions.slice(0, 120)) push(a, { source: 'page' });
+
+      return out.slice(0, 80);
+    }
+
+    function normalizeStepToAllowedTargets(step0, allowedTargets) {
+      const step = step0 && typeof step0 === 'object' ? { ...step0 } : {};
+
+      const byId = new Map();
+      const byLabel = new Map();
+      for (const t of Array.isArray(allowedTargets) ? allowedTargets : []) {
+        if (!t || typeof t !== 'object') continue;
+        if (typeof t.actionId === 'string' && t.actionId) byId.set(t.actionId, t);
+        const key = normalizeLabelForMatch(t.label);
+        if (key && !byLabel.has(key)) byLabel.set(key, t);
+      }
+
+      const rawId = typeof step.actionId === 'string' ? step.actionId.trim() : '';
+      const rawLabel = typeof step.actionLabel === 'string' ? step.actionLabel.trim() : '';
+
+      let target = null;
+      if (rawId && byId.has(rawId)) {
+        target = byId.get(rawId);
+      } else if (rawLabel) {
+        const key = normalizeLabelForMatch(rawLabel);
+        target = (key && byLabel.has(key)) ? byLabel.get(key) : null;
+
+        if (!target && key) {
+          const matches = (Array.isArray(allowedTargets) ? allowedTargets : []).filter((t) => {
+            const k = normalizeLabelForMatch(t?.label);
+            if (!k) return false;
+            return k === key || k.includes(key) || key.includes(k);
+          });
+          if (matches.length === 1) target = matches[0];
+        }
+      }
+
+      if (target) {
+        step.actionId = target.actionId;
+        if (target.label) step.actionLabel = target.label;
+      } else {
+        if (step.actionId) delete step.actionId;
+      }
+
+      if (step.visualTargetNumber != null && !Number.isFinite(step.visualTargetNumber)) {
+        delete step.visualTargetNumber;
+      }
+
+      if (step.actionLabel && typeof step.actionLabel === 'string') {
+        const clean = step.actionLabel.trim().replace(/\s+/g, ' ');
+        step.actionLabel = clean.length > 90 ? clean.slice(0, 90) : clean;
+      }
+
+      return step;
+    }
+
     const goalTokens = tokenizeGoal(goal);
     const isGitHub = typeof context?.url === 'string' && context.url.includes('github.com');
     const wantsBranches = /\bbranch(es)?\b/i.test(goal);
@@ -278,6 +371,28 @@ app.post('/api/explain', async (req, res) => {
         ? context.openMenuGroups.slice(0, 6).map((g) => ({
             kind: g?.kind || null,
             items: Array.isArray(g?.items) ? g.items.slice(0, 12) : []
+          }))
+        : [],
+      activeOverlays: Array.isArray(context?.activeOverlays)
+        ? context.activeOverlays.slice(0, 4).map((o) => ({
+            role: typeof o?.role === 'string' ? o.role.slice(0, 30) : null,
+            containerId: typeof o?.containerId === 'string' ? o.containerId.slice(0, 120) : null,
+            area: o?.area || null
+          }))
+        : [],
+      overlayActions: Array.isArray(context?.overlayActions)
+        ? context.overlayActions.slice(0, 80).map((a) => ({
+            actionId: typeof a?.actionId === 'string' ? a.actionId.slice(0, 40) : null,
+            label: typeof a?.label === 'string' ? a.label.slice(0, 90) : null,
+            semanticType: typeof a?.semanticType === 'string' ? a.semanticType.slice(0, 30) : null,
+            visible: typeof a?.visible === 'boolean' ? a.visible : null,
+            enabled: typeof a?.enabled === 'boolean' ? a.enabled : null,
+            area: a?.area || null,
+            containerId: typeof a?.containerId === 'string' ? a.containerId.slice(0, 120) : null,
+            overlayRole: typeof a?.overlayRole === 'string' ? a.overlayRole.slice(0, 20) : null,
+            expanded: typeof a?.expanded === 'boolean' ? a.expanded : null,
+            selected: typeof a?.selected === 'boolean' ? a.selected : null,
+            checked: typeof a?.checked === 'boolean' ? a.checked : null
           }))
         : [],
       uiActions: Array.isArray(context?.uiActions)
@@ -384,6 +499,8 @@ app.post('/api/explain', async (req, res) => {
       navigationGroups: safeContext.navigationGroups,
       dropdownTriggers: safeContext.dropdownTriggers,
       openMenuGroups: safeContext.openMenuGroups,
+      activeOverlays: safeContext.activeOverlays,
+      overlayActions: safeContext.overlayActions,
       recentEvents: safeContext.recentEvents,
       navGraph: safeContext.navGraph,
       fieldLabels: safeContext.fieldLabels,
@@ -391,6 +508,11 @@ app.post('/api/explain', async (req, res) => {
       fieldCandidates: safeContext.fieldCandidates,
       themeHint: safeContext.themeHint
     };
+
+    const allowedTargets = buildAllowedTargets({
+      overlayActions: safeContext.overlayActions,
+      uiActions: focused.uiActions
+    });
 
     // ---- Workflow normalization (minimal) ----
     const workflowState = {
@@ -501,6 +623,7 @@ app.post('/api/explain', async (req, res) => {
       '{',
       '  "summary": string,',
       '  "clarifyingQuestion": null,',
+      '  "isFinalStep"?: boolean,',
       '  "steps": Array<{"title": string, "details": string, "actionId"?: string, "actionLabel"?: string, "visualTargetNumber"?: number}>,',
       '  "currentStepIndex": number,',
       '  "currentStepHelp": string',
@@ -520,9 +643,14 @@ app.post('/api/explain', async (req, res) => {
       '- If Reason indicates progress (e.g. "progress" or "progress_manual"), do NOT repeat the previous actionId/actionLabel; return the next distinct step.',
       '',
       'Guidance for steps:',
+      '- Set isFinalStep=true ONLY when the step you output is the last meaningful user action toward the Goal, or when the Goal already appears complete and you want the user to confirm completion.',
+      '- If the Goal appears complete already: return a short verification step with NO actionId/actionLabel (describe what to check in details) and set isFinalStep=true so the UI can ask the user if they still need help.',
+      '- If the next action is a final "Submit/Save/Confirm" that should finish the task, set isFinalStep=true on that step.',
       '- If a step requires clicking a button/link, set actionLabel to the exact visible label.',
       '- If a step requires filling a field, set actionLabel to the field label OR placeholder text (what the user sees).',
       '- If Context.uiActions exists, prefer returning steps[0].actionId from Context.uiActions.actionId (this makes highlighting deterministic).',
+      '- IMPORTANT: If you output steps[0].actionId, it MUST be one of AllowedTargets.actionId (exact match).',
+      '- If overlays are open (Context.activeOverlays non-empty), prefer an AllowedTargets entry with overlayRole/containerId (overlay actions).',
       '- If Context.visualTargets exists, you may also return visualTargetNumber from the matching visualTargets.number.',
       '- IMPORTANT: Put the main guidance in steps[0].details and the click target in steps[0].actionLabel. currentStepHelp should be empty or at most a short fallback hint.',
       '- Prefer an EXACT match from Context.primaryActions or Context.primaryFields (case-insensitive match is ok) so the UI can locate/highlight it.',
@@ -545,6 +673,9 @@ app.post('/api/explain', async (req, res) => {
       '',
       'Retrieved memory (vector DB top matches, compact):',
       JSON.stringify(retrievedMemory),
+      '',
+      'AllowedTargets JSON (ONLY choose actionId from this list):',
+      JSON.stringify(allowedTargets),
       '',
       'Context JSON:',
       JSON.stringify(contextForModel),
@@ -657,6 +788,11 @@ app.post('/api/explain', async (req, res) => {
       // Single-step UI always points at the only step.
       data.currentStepIndex = 0;
 
+      // Normalize isFinalStep.
+      const step0 = Array.isArray(data.steps) && data.steps.length === 1 && data.steps[0] && typeof data.steps[0] === 'object' ? data.steps[0] : null;
+      const isFinal = typeof data.isFinalStep === 'boolean' ? data.isFinalStep : typeof step0?.isFinalStep === 'boolean' ? step0.isFinalStep : null;
+      if (typeof isFinal === 'boolean') data.isFinalStep = isFinal;
+
       // If the model put the real guidance into currentStepHelp, migrate it into the step details.
       if (Array.isArray(data.steps) && data.steps.length === 1) {
         const step0 = data.steps[0] && typeof data.steps[0] === 'object' ? data.steps[0] : {};
@@ -707,6 +843,17 @@ app.post('/api/explain', async (req, res) => {
       if (typeof data.currentStepHelp === 'string' && data.currentStepHelp.length > 140) {
         data.currentStepHelp = data.currentStepHelp.slice(0, 140);
       }
+
+      // Normalize targets to AllowedTargets so highlighting stays deterministic.
+      if (Array.isArray(data.steps) && data.steps.length === 1) {
+        const s0 = data.steps[0] && typeof data.steps[0] === 'object' ? data.steps[0] : {};
+        const normalized = normalizeStepToAllowedTargets(s0, allowedTargets);
+        delete normalized.isFinalStep;
+        data.steps[0] = normalized;
+      }
+
+      // Expose allowed targets to the client for debugging/telemetry (not required by UI).
+      data.allowedTargets = allowedTargets;
     }
 
     // Persist the returned step into memory (KG/VDB) so future retrieval can use it.
