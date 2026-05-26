@@ -82,6 +82,16 @@ This project intentionally separates two kinds of memory:
 - Retrieval filters strictly to the current `sessionKey` so **older sessions won’t influence the current guidance**.
 - Ending a session calls `/api/session/end` which removes only vector docs for that `sessionKey` (graph remains).
 
+## Deployment notes (JSON memory store)
+
+The memory layer is persisted to a local JSON file (`server/data/memory.json`) and is loaded into RAM on startup.
+
+- You must deploy with a **persistent filesystem/volume** if you want memory to survive restarts/redeploys.
+- Configure the path via `MEMORY_FILE_PATH` (otherwise the server uses `server/data/memory.json`).
+- To disable memory entirely (no file IO, no embeddings/retrieval), set `MEMORY_DISABLED=1`.
+- **Serverless deployments** (ephemeral filesystem) will lose memory on cold start/redeploy.
+- **Multiple replicas** will each have their own local file, so memory will diverge unless you move it to shared storage (DB/object storage/redis/etc.).
+
 ## Server API
 
 ### `POST /api/explain`

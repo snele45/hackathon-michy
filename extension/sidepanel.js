@@ -28,7 +28,7 @@ let state = {
     origin: null,
     pendingOrigin: null
   },
-  postClickRefresh: { timer: null, lastSeq: 0 },
+  postClickRefresh: { timer: null, lastSeq: 0, lastDomSeqSeen: 0 },
   lastInteraction: { at: 0, eventType: null, actionId: null },
   loopGuard: {
     // key -> count
@@ -152,6 +152,12 @@ function schedulePostProgressRefresh(seq) {
   if (s <= state.postClickRefresh.lastSeq) return;
   state.postClickRefresh.lastSeq = s;
 
+  // If we already observed a DOM change event for this click seq,
+  // avoid redundant post-click refresh.
+  if (Number.isFinite(state.postClickRefresh.lastDomSeqSeen) && state.postClickRefresh.lastDomSeqSeen >= s) {
+    return;
+  }
+
   if (state.postClickRefresh.timer) {
     clearTimeout(state.postClickRefresh.timer);
     state.postClickRefresh.timer = null;
@@ -160,6 +166,8 @@ function schedulePostProgressRefresh(seq) {
   // DOM updates after a click can be async (framework re-render). Re-capture once more quietly.
   state.postClickRefresh.timer = setTimeout(async () => {
     state.postClickRefresh.timer = null;
+
+    if (Number.isFinite(state.postClickRefresh.lastDomSeqSeen) && state.postClickRefresh.lastDomSeqSeen >= s) return;
     if (state.busy) return;
     if (state.walkthroughCompleted) return;
     if (!state.context) return;
@@ -1114,6 +1122,16 @@ async function handlePageEvent(event) {
 
   const eventType = typeof event?.eventType === 'string' ? event.eventType : 'click';
   const eventActionId = typeof event?.actionId === 'string' ? event.actionId.trim() : '';
+
+  // If a DOM mutation event arrives for a click seq, it supersedes the scheduled post-click refresh.
+  if (eventType === 'dom') {
+    const seq = Number.isFinite(event?.seq) ? event.seq : 0;
+    if (seq) state.postClickRefresh.lastDomSeqSeen = seq;
+    if (state.postClickRefresh.timer) {
+      clearTimeout(state.postClickRefresh.timer);
+      state.postClickRefresh.timer = null;
+    }
+  }
 
   // De-dupe: a click on a label often causes an immediate change on the input.
   const li = state.lastInteraction || { at: 0, eventType: null, actionId: null };

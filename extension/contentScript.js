@@ -1308,10 +1308,178 @@ __obGlobal.__obState = __obGlobal.__obState || {
   messageListenerInstalled: false,
   cornerIndicatorObserverInstalled: false,
   cornerPointerListenerInstalled: false,
+  domObserverInstalled: false,
   actionIndex: new Map(),
   lastNonClickSig: null,
-  lastNonClickAt: 0
+  lastNonClickAt: 0,
+  domWatch: null,
+  domMutationCounts: null,
+  domDebounceTimer: null,
+  domLastEmitAt: 0
 };
+
+function isLikelyInteractive(el) {
+  try {
+    if (!el || !(el instanceof Element)) return false;
+    if (!isElementVisible(el)) return false;
+    if (isTandemInjectedElement(el) || isTandemCornerElement(el)) return false;
+
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'button' || tag === 'a' || tag === 'summary' || tag === 'input' || tag === 'select' || tag === 'textarea') return true;
+    if (el.getAttribute?.('contenteditable') === 'true') return true;
+
+    const role = (el.getAttribute?.('role') || '').toLowerCase();
+    if (role && ['button', 'link', 'menuitem', 'option', 'tab', 'checkbox', 'radio', 'switch'].includes(role)) return true;
+
+    const tabindex = el.getAttribute?.('tabindex');
+    if (tabindex != null) {
+      const t = Number(tabindex);
+      if (Number.isFinite(t) && t >= 0) return true;
+    }
+
+    if (el.getAttribute?.('onclick')) return true;
+
+    // Cursor pointer is a strong hint for div-based controls.
+    const cursor = (getComputedStyle(el).cursor || '').toLowerCase();
+    if (cursor === 'pointer') return true;
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+function findLikelyInteractiveTarget(node) {
+  try {
+    const start = node && node.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    if (!start || !(start instanceof Element)) return null;
+
+    // Prefer standard clickable ancestors first.
+    const clickable = findClickableAncestor(start);
+    if (clickable) return clickable;
+
+    // Otherwise, walk up a few parents looking for div-based controls.
+    let cur = start;
+    for (let i = 0; i < 5 && cur; i++) {
+      if (isLikelyInteractive(cur)) return cur;
+      cur = cur.parentElement;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function startDomWatchForClick({ seq, at, actionId, label, kind, urlBefore }) {
+  try {
+    __obGlobal.__obState.domWatch = {
+      seq,
+      at,
+      actionId: actionId || null,
+      label: label || null,
+      kind: kind || null,
+      urlBefore: urlBefore || null,
+      until: Date.now() + 3200,
+      emitted: false
+    };
+    __obGlobal.__obState.domMutationCounts = { childList: 0, attrs: 0, text: 0 };
+  } catch {
+    // ignore
+  }
+}
+
+function emitDomChangeIfAny() {
+  try {
+    const watch = __obGlobal.__obState.domWatch;
+    const counts = __obGlobal.__obState.domMutationCounts;
+    if (!watch || watch.emitted) return;
+    if (!counts) return;
+    const total = (counts.childList || 0) + (counts.attrs || 0) + (counts.text || 0);
+    if (!total) return;
+
+    // Avoid noisy double emits.
+    const now = Date.now();
+    const last = __obGlobal.__obState.domLastEmitAt || 0;
+    if (now - last < 450) return;
+    __obGlobal.__obState.domLastEmitAt = now;
+
+    watch.emitted = true;
+    emitPageEvent({
+      eventType: 'dom',
+      kind: 'mutation',
+      label: null,
+      actionId: null,
+      urlBefore: watch.urlBefore || null,
+      urlAfter: location.href,
+      at: now,
+      seq: watch.seq,
+      domChange: {
+        childList: counts.childList || 0,
+        attrs: counts.attrs || 0,
+        text: counts.text || 0
+      },
+      cause: {
+        actionId: watch.actionId || null,
+        label: watch.label || null,
+        kind: watch.kind || null,
+        at: watch.at || null
+      }
+    });
+  } catch {
+    // ignore
+  }
+}
+
+function installDomChangeObserver() {
+  try {
+    if (__obGlobal.__obState.domObserverInstalled) return;
+    __obGlobal.__obState.domObserverInstalled = true;
+
+    const root = document.documentElement || document.body;
+    if (!root) return;
+
+    const obs = new MutationObserver((mutations) => {
+      try {
+        const watch = __obGlobal.__obState.domWatch;
+        if (!watch || watch.emitted) return;
+        if (Date.now() > (watch.until || 0)) return;
+        if (!Array.isArray(mutations) || mutations.length === 0) return;
+
+        const counts = __obGlobal.__obState.domMutationCounts || { childList: 0, attrs: 0, text: 0 };
+
+        for (const m of mutations) {
+          // Ignore mutations caused by our own overlays/corner.
+          const t = m?.target;
+          if (t && t instanceof Element) {
+            if (isTandemInjectedElement(t) || isTandemCornerElement(t) || t.closest?.('[data-ob-highlight]')) continue;
+          }
+
+          if (m.type === 'childList') {
+            counts.childList += (m.addedNodes?.length || 0) + (m.removedNodes?.length || 0);
+          } else if (m.type === 'attributes') {
+            counts.attrs += 1;
+          } else if (m.type === 'characterData') {
+            counts.text += 1;
+          }
+        }
+
+        __obGlobal.__obState.domMutationCounts = counts;
+
+        // Debounce: emit once after a short quiet period.
+        if (__obGlobal.__obState.domDebounceTimer) clearTimeout(__obGlobal.__obState.domDebounceTimer);
+        __obGlobal.__obState.domDebounceTimer = setTimeout(() => {
+          __obGlobal.__obState.domDebounceTimer = null;
+          emitDomChangeIfAny();
+        }, 220);
+      } catch {
+        // ignore
+      }
+    });
+
+    obs.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
+  } catch {
+    // ignore
+  }
+}
 
 function tryOpenSidePanelFromCorner() {
   try {
@@ -1494,6 +1662,7 @@ try {
   installCornerIndicator();
   installCornerPointerInterceptor();
   installCornerIndicatorObserver();
+  installDomChangeObserver();
 } catch {
   // ignore
 }
@@ -1511,7 +1680,7 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
   document.addEventListener(
     'click',
     (e) => {
-      const targetEl = findClickableAncestor(e.target);
+      const targetEl = findLikelyInteractiveTarget(e.target);
       if (!targetEl) return;
       if (isTandemCornerElement(targetEl)) return;
       if (!isElementVisible(targetEl)) return;
@@ -1533,6 +1702,9 @@ if (!__obGlobal.__obState.clickListenerInstalled) {
         at,
         seq
       });
+
+      // Watch for DOM changes caused by this click (SPA updates, panels opening, etc.)
+      startDomWatchForClick({ seq, at, actionId, label, kind, urlBefore });
 
       setTimeout(() => {
         try {
